@@ -60,6 +60,9 @@ To run the notebooks, you need the following:
 - `KEY_PREMISE`: API key for using the `premise` framework.
 - `USER_PW`: Username and password for access to the **ecoinvent** LCA database.
 
+
+Information on spatially-explicit iron- and steel plants is sourced from the Global Iron and Steel Tracker ([https://globalenergymonitor.org](https://globalenergymonitor.org/projects/global-iron-and-steel-tracker/download-data/)) and Green Steel Tracker ([https://www.industrytransition.org](https://www.industrytransition.org/green-steel-tracker/)). Life cycle inventory files used in this study are obtained from the ecoinvent database (v3.10) (which requires a license) and [premise](https://github.com/polca/premise/tree/master). Additional life cycle inventories sourced for (low-carbon) steel production are publicly available through the work of   [Harpprecht et al. (2025)](https://pubs.rsc.org/en/content/articlelanding/2025/ee/d5ee01356a) in the following repository: https://zenodo.org/records/14968094.
+
 Install the required environment with:
 
 ```bash
@@ -77,18 +80,18 @@ conda activate bw_reg_prem
 
 Use the outputs to:
 
-- Evaluate CBAM policy impact across world regions
-- Compare multiple LCA indicators (e.g., climate change impacts and water consumption)
-- Analyze different future scenarios and sensitivity cases
+- Evaluate CBAM effectiveness for iron and steel industry.
+- Compare climate change impacts.
+- Analyze different future scenarios and sensitivity cases.
 
 ---
 
 ## License, citing, and scientific references
 
 If you use this repository, the data, or any of the included code, please cite the following paper:  
-*_[Insert citation here]_*
+*Terlouw, T., Harpprecht, C., & Bauer, C. (2025). Towards effective carbon accounting for the global steel industry within the EU carbon border adjustment mechanism. In Review.*
 
-Following the Creative Commons license of the Global Steel Plant Tracker and Green Steel Tracker, we realize that this is a work derived from their material. However, we are solely liable and responsible for this derived work, and it is not endorsed by those sources in any manner.
+Following the Creative Commons license of the Global Iron and Steel Tracker ([https://globalenergymonitor.org](https://globalenergymonitor.org/projects/global-iron-and-steel-tracker/download-data/)) and Green Steel Tracker ([https://www.industrytransition.org](https://www.industrytransition.org/green-steel-tracker/)), we realize that this is a work derived from their material. However, we are solely liable and responsible for this derived work, and it is not endorsed by those sources in any manner.
 
 For licensing information, see the `LICENSE` file.
 
@@ -105,7 +108,7 @@ This research was supported through the following funding schemes:
 
 > The content of this work does not necessarily reflect the opinion of the European Commission or any other funding body. Responsibility lies solely with the authors.
 
-For more on TRANSIENCE, visit: [https://www.transience.eu](https://www.transience.eu)
+For more information regarding the TRANSIENCE project, please visit: [https://www.transience.eu](https://www.transience.eu)
 
 ---
 
