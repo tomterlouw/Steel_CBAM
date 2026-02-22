@@ -6,6 +6,7 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
 import matplotlib.patches as patches
 import matplotlib.patches as mpatches  # Import for the legend patches
 import cartopy
+import matplotlib.patheffects as pe
 
 from mapping import * 
 from functions import iso2_to_country
@@ -405,7 +406,20 @@ def plot_steel_map(import_df, pot_cols, subplot=False, titles = [], division_bub
 
         plt.setp(autotexts, size=12, weight="bold", color="white")
 
-        legend_patches = [mpatches.Patch(color=color, label=label ) for label, color in end_product_colors.items()]
+        # Only keep commodity types that actually appear (sum > 0) for this pot_col
+        nonzero = set(
+            df_2.groupby("commodity_type")[pot_col]
+                .sum()
+                .loc[lambda s: s > 0]
+                .index
+        )
+
+        legend_patches = [
+            mpatches.Patch(color=color, label=label)
+            for label, color in end_product_colors.items()
+            if label in nonzero
+        ]
+
         rect = patches.Rectangle((0.0, 0.60), 0.14, 0.57, transform=ax.transAxes, facecolor='black', edgecolor='black', alpha=0.1)
         ax.add_patch(rect)
 
@@ -565,6 +579,8 @@ def plot_cbam_covered_stacked(df,
 
 def plot_cbam_scope_stacked(results_df_ind, ei_dbs, db_label_map, name_mapping_techs, 
                             name_cbam_true = 'cbam_true', name_cbam_false = 'cbam_false', 
+                            name_cbam_true_exclude_scope_2 = 'cbam_true_exclude_scope_2', 
+                            name_cbam_false_exclude_scope_2 = 'cbam_false_exclude_scope_2', 
                              output_path="figs/steel_cbam_scope_stacked.png", fontsize_n=13.2):
     """
     Plots stacked bar charts for each steel technology showing:
@@ -619,7 +635,18 @@ def plot_cbam_scope_stacked(results_df_ind, ei_dbs, db_label_map, name_mapping_t
                 ha="center", va="bottom",
                 fontsize=9, fontweight='bold', color="#333333"
             )
-            ax.set_ylim(0, 4)
+            ax.set_ylim(0, 4.25)
+
+            cbam_total_exclude_scope_2 = row[name_cbam_true_exclude_scope_2] + row[name_cbam_false_exclude_scope_2]
+            cbam_share_exclude_scope_2 = row[name_cbam_true_exclude_scope_2] / cbam_total_exclude_scope_2 if cbam_total_exclude_scope_2 > 0 else 0
+            ax.text(
+                x[j] - bar_width / 2 + 0.2,
+                0.6 * cbam_total_exclude_scope_2 + 0.01,
+                f"{cbam_share_exclude_scope_2:.0%}",
+                ha="center", va="bottom",
+                fontsize=9, fontweight='bold', color="white",
+                path_effects=[pe.Stroke(linewidth=2, foreground='black'), pe.Normal()]
+            )
 
             # Scope stacked bar
             bottom = 0

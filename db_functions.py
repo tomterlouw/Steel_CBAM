@@ -298,5 +298,3 @@ def match_year_to_database(year, iam_model='image_SSP2-RCP26', ref_db = NAME_REF
             return db
 
     raise ValueError(f"No database match found for year {year}")
-
-    

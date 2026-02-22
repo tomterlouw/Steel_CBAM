@@ -1,6 +1,6 @@
 # `Steel_CBAM`
 
-`Steel_CBAM` is a repository designed to quantify the climate-effectiveness of the European Union's Carbon Border Adjustment Mechanism (CBAM) for the global steel industry. It combines (prospective) life cycle assessment (LCA) with regionalized production data. The code was developed in the context of project TRANSIENCE (see Acknowledgements).
+`Steel_CBAM` is a repository designed to quantify the climate-coverage of the European Union's Carbon Border Adjustment Mechanism (CBAM) for the global steel industry. It combines (prospective) life cycle assessment (LCA) with regionalized production data. The code was developed in the context of project TRANSIENCE (see Acknowledgements).
 
 ---
 
@@ -15,9 +15,8 @@ steel_cbam_assessment/
 ├── 0_set_up_lca_db_gen_acts.ipynb        # Prepares background LCA databases using premise
 ├── 1_steel_dbs_setup.ipynb               # Sets up steel production databases used
 ├── 2_steel_assessment.ipynb              # Main notebook to perform CBAM impact assessment and for creating databases
-├── 3_create_additional_prospective_...   # Additional notebook for created additional prospective regionalized LCA databases for REMIND IAM
-├── 4_create_additional_figs_REMIND.ipynb # Visualizations based on REMIND IAM
-├── 5_create_sensitivity_figs.ipynb       # Sensitivity analysis visualizations
+├── 3_prospective_analysis_REMIND         # Additional notebook for calculating prospective impacts using REMIND IAM
+├── 4_create_sensitivity_figs.ipynb       # Sensitivity analysis visualizations
 ├── config.py                             # Configuration and parameter settings
 ├── db_functions.py                       # Functions for database setup and querying
 ├── functions.py                          # General helper functions
@@ -43,11 +42,11 @@ Configures region-specific steel production routes using the databases.
 ### `2_steel_assessment.ipynb`
 Performs the main CBAM assessment by first creating new databases and then calculating environmental impacts under various scenarios, regions, and timeframes. 
 
-### `3_create_additional_prospective_regionalized_dbs.ipynb`
-Generates additional prospective LCA databases for REMIND with regionalization to REMIND regions.
+### `3_prospective_analysis_REMIND.ipynb`
+Additional notebook for calculating prospective impacts using REMIND IAM.
 
-### `4_create_additional_figs_REMIND.ipynb` and `5_create_sensitivity_figs.ipynb`
-Optional notebooks to generate advanced visualizations based on IAM pathways and sensitivity assumptions.
+### `4_create_sensitivity_figs.ipynb`
+Optional notebook to generate advanced visualizations on sensitivity assumptions.
 
  *Each notebook includes markdown cells that explain assumptions, code logic, and visualization steps.*
 
@@ -57,11 +56,11 @@ Optional notebooks to generate advanced visualizations based on IAM pathways and
 
 To run the notebooks, you need the following:
 
-- `KEY_PREMISE`: API key for using the `premise` framework.
-- `USER_PW`: Username and password for access to the **ecoinvent** LCA database.
+- `KEY_PREMISE`: API key for using the [`premise`](https://github.com/polca/premise) framework.
+- `USER_PW`: Username and password (requires a license) for access to the **ecoinvent** LCA database.
 
 
-Information on spatially-explicit iron- and steel plants is sourced from the Global Iron and Steel Tracker ([https://globalenergymonitor.org](https://globalenergymonitor.org/projects/global-iron-and-steel-tracker/download-data/)) and Green Steel Tracker ([https://www.industrytransition.org](https://www.industrytransition.org/green-steel-tracker/)). Life cycle inventory files used in this study are obtained from the ecoinvent database (v3.10) (which requires a license) and [premise](https://github.com/polca/premise/tree/master). Additional life cycle inventories sourced for (low-carbon) steel production are publicly available through the work of   [Harpprecht et al. (2025)](https://pubs.rsc.org/en/content/articlelanding/2025/ee/d5ee01356a) in the following repository: https://zenodo.org/records/14968094.
+Information on spatially-explicit iron- and steel plants is sourced from the Global Iron and Steel Tracker ([https://globalenergymonitor.org](https://globalenergymonitor.org/projects/global-iron-and-steel-tracker/download-data/)) and Green Steel Tracker ([https://www.industrytransition.org](https://www.industrytransition.org/green-steel-tracker/)). Life cycle inventory files used in this study are obtained from the ecoinvent database (v3.10) (which requires a license) and [premise](https://github.com/polca/premise/tree/master). Additional life cycle inventories sourced for (low-carbon) steel production are publicly available through the work of [Harpprecht et al. (2025)](https://pubs.rsc.org/en/content/articlelanding/2025/ee/d5ee01356a) in the following repository: https://zenodo.org/records/14968094.
 
 Install the required environment with:
 
@@ -80,7 +79,7 @@ conda activate bw_reg_prem
 
 Use the outputs to:
 
-- Evaluate CBAM effectiveness for iron and steel industry.
+- Evaluate CBAM coverage for iron and steel industry.
 - Compare climate change impacts.
 - Analyze different future scenarios and sensitivity cases.
 
@@ -89,7 +88,7 @@ Use the outputs to:
 ## License, citing, and scientific references
 
 If you use this repository, the data, or any of the included code, please cite the following paper:  
-*Terlouw, T., Harpprecht, C., & Bauer, C. (2025). Towards effective carbon accounting for the global steel industry within the EU carbon border adjustment mechanism. In Review.*
+*Terlouw, T., Harpprecht, C., & Bauer, C. (2026). Facility-specific GHG emissions of global steel production and their alignment with the EU Carbon Border Adjustment Mechanism. In Review.*
 
 Following the Creative Commons license of the Global Iron and Steel Tracker ([https://globalenergymonitor.org](https://globalenergymonitor.org/projects/global-iron-and-steel-tracker/download-data/)) and Green Steel Tracker ([https://www.industrytransition.org](https://www.industrytransition.org/green-steel-tracker/)), we realize that this is a work derived from their material. However, we are solely liable and responsible for this derived work, and it is not endorsed by those sources in any manner.
 

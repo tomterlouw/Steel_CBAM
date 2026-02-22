@@ -14,8 +14,15 @@ import bw2data as bd
 from contextlib import redirect_stdout
 from rapidfuzz import process, fuzz
 import wurst as w
+import os
+import re
+import pickle
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Any
 
-from mapping import CO2_emission_factor_hydrogen, CO2_emission_factor_precursors_kgCO2_kg
+import pandas as pd
+from tqdm import tqdm
+
+from mapping import CO2_emission_factor_hydrogen, CO2_emission_factor_precursors_kgCO2_kg, CBAM_RELEVANT_PRECURSORS_IRON, CBAM_RELEVANT_PRECURSORS_STEEL, SCOPE_2_EXCHANGES
 
 # Standard VARS
 EN_H2 = 120 #MJ/kg h2
@@ -32,6 +39,9 @@ custom_mappings = {
     "Russia": "RU",
 }
 
+FUZZY_THRESHOLD = 90  # Tweak as needed (0–100). Higher = stricter match.
+FUZZY_THRESHOLD_SCOPE_2 = 90
+
 def convert_iso3_to_iso2(iso3):
     try:
         country = pycountry.countries.get(alpha_3=iso3)
@@ -46,6 +56,295 @@ def country_to_iso2(country_name):
         return pycountry.countries.lookup(country_name).alpha_2
     except LookupError:
         return None  # Handle missing cases gracefully
+
+
+# -------------------------
+# Helpers
+# -------------------------
+
+def build_results_columns(methods: Sequence[Tuple]) -> List[str]:
+    base = [
+        "name", "year", "unit", "country", "location", "reference product",
+        "production volume", "database", "initial name", "comment",
+        "latitude", "longitude", "power_source",
+    ]
+    base += [f"lca_impact_{m[1]}" for m in methods]
+    base += [f"lca_impact_contri_{m[1]}" for m in methods if "climate change" in str(m)]
+    return base
+
+
+def parse_year_from_name(name: str) -> Optional[int]:
+    m = re.search(r"\[(\d{4})\]", name or "")
+    return int(m.group(1)) if m else None
+
+
+def parse_comment_field(comment: str, key: str) -> Optional[str]:
+    """
+    Extracts e.g. key='latitude:' from comment like "... latitude:47.3, longitude:8.5, ..."
+    Returns None if not found.
+    """
+    if not comment:
+        return None
+    token = f"{key}:"
+    if token not in comment:
+        return None
+    try:
+        return comment.split(token, 1)[1].split(",", 1)[0].strip()
+    except Exception:
+        return None
+
+
+def should_do_contri(method: Tuple, contri: bool) -> bool:
+    return contri and ("climate change" in str(method))
+
+
+def compute_contribution_array(act_sel, lca: bw.LCA) -> List[Tuple[Any, ...]]:
+    """
+    Returns list of tuples: (exc_name, impact_value, scope, cbam, amount)
+    - Technosphere: redo LCIA for exc.input with exc['amount']
+    - Biosphere: cf * exc['amount']
+    """
+    result_array = []
+    for exc in act_sel.exchanges():
+        exc_type = exc.get("type")
+
+        if exc_type == "technosphere":
+            lca.redo_lcia({exc.input: exc["amount"]})
+            result_array.append((
+                exc.get("name"),
+                lca.score,
+                exc.get("scope"),
+                exc.get("cbam"),
+                exc.get("amount"),
+            ))
+
+        elif exc_type == "biosphere":
+            # Multiply amount by its CF (as in your code)
+            # Note: this assumes the current lca.method is the climate change method.
+            cf = lca.characterization_matrix[lca.biosphere_dict[exc.input], :].sum()
+            result_array.append((
+                exc.get("name"),
+                float(cf) * exc.get("amount", 0.0),
+                exc.get("scope"),
+                exc.get("cbam"),
+                exc.get("amount"),
+            ))
+    return result_array
+
+
+def compute_lca_for_activity(
+    act_sel,
+    methods: Sequence[Tuple],
+    contri: bool = True,
+) -> Dict[str, Any]:
+    """
+    Computes LCA scores for one activity across all methods.
+    Reuses the same LCA object, switching methods between runs.
+    """
+    lca_scores: Dict[str, Any] = {}
+    lca_scores_contri: Dict[str, Any] = {}
+
+    lca = None
+    for j, method in enumerate(methods):
+        if j == 0:
+            lca = bw.LCA({act_sel: 1}, method=method)
+            lca.lci()
+            lca.lcia()
+        else:
+            # switch method and redo LCIA
+            lca.switch_method(method)
+            lca.redo_lcia({act_sel: 1})
+
+        lca_scores[f"lca_impact_{method[1]}"] = lca.score
+
+        if should_do_contri(method, contri):
+            lca_scores_contri[f"lca_impact_contri_{method[1]}"] = compute_contribution_array(act_sel, lca)
+
+    out = {}
+    out.update(lca_scores)
+    out.update(lca_scores_contri)
+    return out
+
+
+def postprocess_results_df(
+    df: pd.DataFrame,
+    european_countries: Iterable[str],
+    dict_types: Dict[str, Any],
+    sum_exchanges_wo_transport: Optional[Callable[[Any], float]] = None,
+    exclude_iron: bool = True,
+) -> pd.DataFrame:
+    df = df.copy()
+
+    # numeric lat/lon
+    df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
+    df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
+
+    # region classification
+    eu_set = set(european_countries)
+    df["region"] = df["location"].apply(lambda x: "European" if x in eu_set else "Non-European")
+
+    # emissions totals
+    if "lca_impact_climate change" in df.columns:
+        df["Plant_GHG_emissions_Mt"] = df["production volume"] * df["lca_impact_climate change"]
+
+    # climate change without transport (if available)
+    if sum_exchanges_wo_transport is not None and "lca_impact_contri_climate change" in df.columns:
+        df["lca_impact_climate change_wo_transport"] = df["lca_impact_contri_climate change"].apply(sum_exchanges_wo_transport)
+        df["Plant_GHG_emissions_Mt_wo_transport"] = df["production volume"] * df["lca_impact_climate change_wo_transport"]
+
+    # commodity type mapping
+    if "initial name" in df.columns:
+        df["commodity_type"] = df["initial name"].map(dict_types)
+
+    # exclude iron making
+    if exclude_iron and "initial name" in df.columns:
+        df = df[~df["initial name"].str.contains("iron", case=False, na=False)]
+
+    # sort
+    if "Plant_GHG_emissions_Mt" in df.columns:
+        df = df.sort_values(by="Plant_GHG_emissions_Mt", ascending=False)
+
+    return df
+
+
+# -------------------------
+# Main modular function
+# -------------------------
+
+def calc_lca_impacts_all_plants(
+    steel_method: str,
+    db_name_base: str,
+    methods: Sequence[Tuple],
+    *,
+    results_dir: str = "results",
+    calc_lca_impacts: bool = True,
+    contri: bool = True,
+    start_idx: int = 0,
+    european_countries: Iterable[str] = (),
+    dict_types: Dict[str, Any] = None,
+    sum_exchanges_wo_transport: Optional[Callable[[Any], float]] = None,
+    exclude_iron: bool = True,
+    save_pickle: bool = True,
+    tqdm_desc: Optional[str] = "Calculating LCA impacts",
+    time_tag = '',
+    db_tag: str = '',
+) -> pd.DataFrame:
+    """
+    Modular version of your workflow.
+
+    Parameters
+    ----------
+    steel_method : str
+        Suffix identifying the steel production method, e.g. "ew", "bf_bof", ...
+    db_name_base : str
+        Base db name without suffix. Final DB name becomes f"{db_name_base}_{steel_method}".
+    methods : Sequence[Tuple]
+        Brightway LCIA methods (tuples), e.g. MY_METHODS.
+    results_dir : str
+        Directory to store pickles.
+    calc_lca_impacts : bool
+        If True: compute and save. If False: load from pickle.
+    contri : bool
+        If True: compute contribution arrays for climate change methods.
+    start_idx : int
+        Resume index (skip activities with i < start_idx).
+    european_countries : iterable
+        Used to classify 'region'.
+    dict_types : dict
+        Mapping from initial name -> commodity type.
+    sum_exchanges_wo_transport : callable
+        Function applied to contribution arrays to exclude transport.
+    exclude_iron : bool
+        Whether to remove plants whose initial name contains 'iron'.
+    save_pickle : bool
+        Save computed results to pickle if calc_lca_impacts is True.
+    tqdm_desc : str
+        Description for tqdm progress bar.
+
+    Returns
+    -------
+    pd.DataFrame
+    """
+    if dict_types is None:
+        dict_types = {}
+    
+    time_tag = "_future" if time_tag == 'future' else '' 
+    db_tag = f"_{db_tag}" if len(db_tag) > 0 else '' 
+
+    db_name = (
+        f"{db_name_base}{time_tag}_{steel_method}{db_tag}"
+        if steel_method
+        else f"{db_name_base}{time_tag}{db_tag}"
+    )
+    
+    os.makedirs(results_dir, exist_ok=True)
+
+    file_path = (
+        os.path.join(results_dir, f"results_df{time_tag}_{steel_method}{db_tag}.pkl")
+        if steel_method
+        else os.path.join(results_dir, f"results_df{time_tag}{db_tag}.pkl")
+    )
+
+
+    if not calc_lca_impacts:
+        with open(file_path, "rb") as f:
+            df = pickle.load(f)
+        return postprocess_results_df(
+            df,
+            european_countries=european_countries,
+            dict_types=dict_types,
+            sum_exchanges_wo_transport=sum_exchanges_wo_transport,
+            exclude_iron=exclude_iron,
+        )
+
+    # compute
+    columns = build_results_columns(methods)
+    results_df = pd.DataFrame(columns=columns)
+
+    acts = list(bw.Database(db_name))
+    iterator = enumerate(tqdm(acts, desc=tqdm_desc or f"LCA {db_name}"))
+
+    for i, act_sel in iterator:
+        if i < start_idx:
+            continue
+
+        # compute scores for this activity
+        scores = compute_lca_for_activity(act_sel, methods=methods, contri=contri)
+
+        name = act_sel.get("name")
+        comment = act_sel.get("comment", "")
+
+        row = {
+            "name": name,
+            "reference product": act_sel.get("reference product"),
+            "country": act_sel.get("location"),
+            "location": act_sel.get("location"),
+            "production volume": act_sel.get("production volume"),
+            "unit": act_sel.get("unit"),
+            "database": act_sel.get("database"),
+            "initial name": (name.split(" for facility in")[0] if isinstance(name, str) else None),
+            "comment": comment,
+            "year": parse_year_from_name(name or ""),
+            "latitude": parse_comment_field(comment, "latitude"),
+            "longitude": parse_comment_field(comment, "longitude"),
+            "power_source": parse_comment_field(comment, "power source"),
+        }
+        row.update(scores)
+
+        results_df = pd.concat([results_df, pd.DataFrame([row])], ignore_index=True)
+
+    if save_pickle:
+        results_df.to_pickle(file_path)
+
+    # postprocess
+    return postprocess_results_df(
+        results_df,
+        european_countries=european_countries,
+        dict_types=dict_types,
+        sum_exchanges_wo_transport=sum_exchanges_wo_transport,
+        exclude_iron=exclude_iron,
+    )
+
 
 # Function to convert country name to continent name
 def get_continent(country_name):
@@ -114,96 +413,84 @@ def silent_search(db_name, name_search, desired_location):
         ))
     return results
 
-##ACTUAL relevant precursors based on the document of the EU:
-#https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX:32023R1773#page=9.57
-"""
-Relevant precursors:
-— crude steel, if used in the process;
-— pig iron, DRI, if used in the process;
-— FeMn, FeCr, FeNi, if used in the process;
-— iron or steel products, if used in the process;
-— hydrogen if used in the process (we will need to consider this as we unfold some activities)
-"""
+def sum_electricity_and_hydrogen_from_db(
+    db_name: str,
+    *,
+    bw,
+    h2_electricity_factor_kWh_per_kg: float,
+):
+    """
+    Sum electricity production and hydrogen use from a Brightway database.
 
-# p. 89:
-CBAM_RELEVANT_PRECURSORS_EXCL = {
-    #biomass related sources, but not needed here as we don't include them
-    "sintered ore": (["sintered ore", "iron sinter", 'iron pellet production'], ["waste", "treatment","recycling","scrap", "recycled", "ash", "sludge", 'residues', 'slag', "wastewater", 'silicon production, photovoltaics']),
-    "pig iron": (["pig iron", "BF+CCS, iron production", "sponge iron production", 'market for iron scrap, sorted, pressed', 'market for iron scrap, unsorted',
-                  "market for sponge iron", "iron production", 'iron scrap', 'iron ore', 'iron scrap, sorted', 'iron scrap, unsorted'], 
-                 ["waste", "treatment","recycling", "recycled", "ash", "sludge", 'residues', 'slag', "wastewater", 'silicon production, photovoltaics']),
-    "ferro-chromium": (["ferro-chromium", "ferro chromium", "ferrochromium", "ferrochromium production", 'market for ferrochromium, high-carbon'], ["waste", "treatment","recycling","scrap", "recycled", "ash", "sludge", 'residues', 'slag', "wastewater", 'silicon production, photovoltaics']),
-    "ferro-manganese": (['market for ferromanganese, high-coal, 74.5% Mn', "ferro-manganese", "ferro manganese", "ferromanganese", "ferromanganese production"], ["waste", "treatment","recycling","scrap", "recycled", "ash", "sludge", 'residues', 'slag', "wastewater", 'silicon production, photovoltaics']),
-    "ferro-nickel": (["ferro-nickel", "ferro nickel", "ferronickel", "ferronickel production"], ["waste", "treatment","recycling","scrap", "recycled", "ash", "sludge", 'residues', 'slag', "wastewater", 'silicon production, photovoltaics']),
-    "direct reduced iron": (["direct reduced iron", "dri", "reduced iron"], ["waste", "treatment","recycling","scrap", "recycled", "ash", "sludge", 'residues', 'slag', 'silicon production, photovoltaics']),
-    "steel": (["crude steel", "steel production", "low-alloyed steel", "unalloyed steel", "steel manufacturing"], ["waste", "treatment","recycling","scrap", "recycled", "ash", 
-                                                                                                                   "sludge", 'residues', 'slag', "wastewater", 'metal working', 'silicon production, photovoltaics']),
-    'hydrogen': (["hydrogen production, ", "hydrogen, gaseous, low pressure", "hydrogen gaseous"], ["waste", "treatment","recycling","scrap", "recycled", "ash", "sludge"]), # in DRI!
-}
+    Parameters
+    ----------
+    db_name : str
+        Name of the Brightway database to scan.
+    bw : brightway2 module
+    h2_electricity_factor_kWh_per_kg : float
+        Electricity required to produce hydrogen (kWh per kg H2),
+        e.g. ~50–55 kWh/kg for electrolysis.
 
-#DOES IMPORTANT PRECURSORS ARE NOT INCLUDED YET:
-"""
-"lime":  (['market for quicklime, in pieces, loose', 'market for limestone, unprocessed',"market for lime", "lime", "limestone", 'market for quicklime', 'quicklime'], ["waste", "treatment","recycling","scrap", 'limestone quarry construction']),
-"ferrosilicon": (["ferro-silicon", "ferro silicon", "ferrosilicon", "silicon production"], ["waste", "treatment","recycling","scrap", "recycled", "ash", "sludge", 'residues', 'slag', "wastewater", 'silicon production, photovoltaics']),
-
-"coke": (["market for coke", "coke"], ["waste", "treatment","recycling","scrap"]), 
-"coal": (["market for coal", "coal", "anthracite", "coking coal"], ["waste", "treatment","recycling","scrap", 'market for coal slurry',
-                                                                    'hard coal ash', 'sewage sludge', 'mine construction, underground, hard coal']), 
-
-"aluminium": (
-    [
-        "primary aluminium", 
-        'market for aluminium, primary, ingot',
-        "unalloyed aluminium",
-        "aluminium production",
-        "market for aluminium, primary",
-        "market for aluminium, unalloyed",
-        "market for aluminium, wrought alloy", 
-        "anode, for metal electrolysis",
-        "alumina production",
-        "aluminium oxide",
-        "aluminium electrolysis"
-    ],
-    [
-        "recycled", "recycling", "scrap", "waste", "treatment", 
-        "slag", "residues", "ash", "silicon production, photovoltaics"
-    ])
+    Returns
+    -------
+    dict with:
+        electricity_TWh
+        hydrogen_Mt
+        hydrogen_electricity_TWh
+        total_electricity_TWh
     """
 
-SCOPE_2_EXCHANGES =['electricity, medium voltage',
-                    'electricity, low voltage',
-                    'electricity production,',
-                  'diesel, burned in diesel-electric generating set, 10MW, for oil and gas extraction',
-                  'heavy fuel oil, burned in refinery furnace',
-                  'sweet gas, burned in gas turbine',
-                  'heat, district or industrial, other than natural gas',
-                  'natural gas, burned in gas turbine',
-                  'diesel, burned in building machine',
-                  'electricity, high voltage',
-                  'electricity, high voltage, for internal use in coal mining',
-                  'heat, from steam, in chemical industry',
-                 ]
+    electricity_kWh = 0.0
+    hydrogen_kg = 0.0
 
-WASTE_EXCHANGES=['hazardous waste, for underground deposit', 
-                 'municipal solid waste',
-                 'waste natural gas, sweet',
-                 'water discharge from petroleum extraction, offshore',
-                 'spent catalytic converter NOx reduction',
-                 'waste refinery gas',
-                 'water discharge from petroleum/natural gas extraction, onshore',
-                 'spoil from hard coal mining',
-                 'hazardous waste, for incineration',
-                 'waste gypsum',
-                 'inert waste, for final disposal',
-                 'wastewater, average',
-                 'spoil from lignite mining',
-                 'blast furnace slag, Recycled Content cut-off'
-                ]
+    for act in list(bw.Database(db_name)):
+        #print(act['name'])
 
-FUZZY_THRESHOLD = 90  # Tweak as needed (0–100). Higher = stricter match.
-FUZZY_THRESHOLD_SCOPE_2 = 90
+        # ---------------------------
+        # Hydrogen and electricity consumption
+        # ---------------------------
+        production_volume = act.get("production volume", 0)
+        for exc in act.exchanges():
+            if (
+                exc.get("type") == "technosphere" and
+                "kilogram" in str(exc.get("unit", "")).lower()
+                and (
+                    "hydrogen, gaseous" in str(exc.get("reference product", "")).lower()
+                    or "hydrogen, gaseous" in str(exc.get("product", "")).lower()
+                )
+            ):
+                amount = exc.get("amount", 0.0)
+                if amount is not None:
+                    hydrogen_kg += float(amount) * float(production_volume) * 1e9
 
-def define_scope_cbam(exc, cbam_relevant_precursors=CBAM_RELEVANT_PRECURSORS_EXCL):
+            if (
+                "electricity" in str(exc.get("name", "")).lower()
+                and "kilowatt hour" in str(exc.get("unit", "")).lower()
+                and (
+                    "electricity" in str(exc.get("reference product", "")).lower()
+                    or "electricity" in str(exc.get("product", "")).lower()
+                )
+            ):
+                amount_power = exc.get("amount", 0.0)
+                if amount_power is not None:
+                    electricity_kWh += float(amount_power) * float(production_volume) * 1e9
+
+
+    electricity_TWh = electricity_kWh / 1e9
+    hydrogen_Mt = hydrogen_kg / 1e9
+
+    hydrogen_electricity_TWh = (
+        hydrogen_kg * h2_electricity_factor_kWh_per_kg / 1e9
+    )
+
+    return {
+        "electricity_TWh": electricity_TWh,
+        "hydrogen_Mt": hydrogen_Mt,
+        "hydrogen_electricity_TWh": hydrogen_electricity_TWh,
+        "total_electricity_TWh": electricity_TWh + hydrogen_electricity_TWh,
+    }
+
+def define_scope_cbam(exc, cbam_relevant_precursors, scope_2_exchanges=SCOPE_2_EXCHANGES):
     """
     Classifies an exchange (`exc`) into Scope 1, 2, or 3 emissions categories
     AND indicates whether the exchange is included in CBAM (especially for Scope 3),
@@ -255,7 +542,7 @@ def define_scope_cbam(exc, cbam_relevant_precursors=CBAM_RELEVANT_PRECURSORS_EXC
         name_lower = exc['name'].lower()
     
         # --- Scope 2: purchased electricity, steam, heat, or cooling ---
-        for candidate in SCOPE_2_EXCHANGES:
+        for candidate in scope_2_exchanges:
             candidate_lower = candidate.lower()
             ratio_name = fuzz.token_set_ratio(candidate_lower, name_lower)
             
@@ -287,7 +574,7 @@ def define_scope_cbam(exc, cbam_relevant_precursors=CBAM_RELEVANT_PRECURSORS_EXC
                 break  # Stop checking further CBAM goods
     
     return result
-
+    
 def sum_scope_contributions(data):
     """
     Sums LCA impact contributions by scope (Scope 1, Scope 2, Scope 3).
@@ -314,7 +601,7 @@ def sum_scope_contributions(data):
     
     return {f'Scope {key}': val for key, val in sorted(scope_sums.items())}
 
-def sum_cbam_contributions(data, alpha, exc_ccs=True):
+def sum_cbam_contributions(data, alpha, exc_ccs=True, exclude_scope_2=False):
     """
     Sums LCA impact contributions based on CBAM relevance.
 
@@ -351,6 +638,8 @@ def sum_cbam_contributions(data, alpha, exc_ccs=True):
             if key == 'cbam_true' and scope == 3:
                 cbam_sums['cbam_true'] += value * alpha # consider that emissions are LCA impacts
                 cbam_sums['cbam_false'] += value * (1-alpha)
+            elif exclude_scope_2 and scope == 2:
+                cbam_sums['cbam_false'] += value # if we want to exclude scope 2 from CBAM, we consider it as non-CBAM, but we still sum it in the total (cbam_false)
             else:
                 cbam_sums[key] += value
     
@@ -469,37 +758,6 @@ def sum_cbam_contributions_emission_factor(data, alpha, log_path='logs\cbam_emis
         'cbam_false_efactor': cbam_sums['cbam_false']
     }
 
-def merge_duplicate_exchanges(exchanges):
-    """
-    Aggregates exchanges by summing the 'amount' for entries with the same 'input' key.
-
-    This function identifies duplicate exchanges based on the 'input' field and merges them 
-    by summing their 'amount' values. Only the first occurrence of each unique 'input' key 
-    is retained in the output, with its 'amount' updated to reflect the total sum.
-
-    Parameters:
-        exchanges (list of dict): List of exchange dictionaries.
-
-    Returns:
-        list of dict: List of exchanges with duplicates merged based on 'input'.
-    """
-    seen = {}
-    merged_exchanges = []
-
-    for ex in exchanges:
-        key = ex['input']
-        if key in seen:
-            seen[key]['amount'] += ex['amount']  # Sum amounts for duplicates
-        else:
-            new_entry = copy.deepcopy(ex)  # Create a separate copy
-            seen[key] = new_entry
-            merged_exchanges.append(new_entry)
-
-    # Remove entries where amount is zero
-    merged_exchanges = [ex for ex in merged_exchanges if ex['amount'] != 0]
-
-    return merged_exchanges
- 
 def find_activity_fast(db_name, name_search, desired_ref_product, desired_location):
     """
     Quickly find a Brightway2 activity by name, location, and reference product using filtered search.
@@ -678,7 +936,7 @@ def find_bw_act(database_name, activity_name, ref_product, location):
     # Return the single matching activity
     return matching_activities[0]
 
-def annotate_exchanges_with_cbam(db_name, define_scope_cbam_func, cbam_precursors_excl, 
+def annotate_exchanges_with_cbam(db_name, define_scope_cbam_func, cbam_precursors_steel_excl=CBAM_RELEVANT_PRECURSORS_STEEL, cbam_precursors_iron_excl=CBAM_RELEVANT_PRECURSORS_IRON, 
                                  annotation_scope = 'scope', annotation_cbam_included = 'cbam',start_idx=0):
     """
     Annotate exchanges in a Brightway2 database with CBAM-related metadata.
@@ -688,8 +946,10 @@ def annotate_exchanges_with_cbam(db_name, define_scope_cbam_func, cbam_precursor
     - define_scope_cbam_func (Callable): A function that takes an exchange and 
       `CBAM_RELEVANT_PRECURSORS` as input, and returns a dictionary with keys 
       `'scope'` and `'cbam'`.
-    - cbam_precursors_excl (Iterable): A list or set of CBAM-relevant precursors to be excluded 
-      from consideration when defining CBAM scope.
+    - cbam_precursors_steel_excl (Iterable): A list or set of CBAM-relevant precursors to be excluded 
+      from consideration when defining CBAM scope for steel.
+    - cbam_precursors_iron_excl (Iterable): A list or set of CBAM-relevant precursors to be excluded 
+      from consideration when defining CBAM scope for iron.
     - annotation_scope (str, optional): The exchange key where the scope value should be saved. 
       Default is `'scope'`.
     - annotation_cbam_included (str, optional): The exchange key where the CBAM inclusion flag 
@@ -702,6 +962,17 @@ def annotate_exchanges_with_cbam(db_name, define_scope_cbam_func, cbam_precursor
     start_time = time.time()
 
     for i, act in enumerate(acts):
+        steel_or_iron_act = parse_comment_field(act.get("comment", ""), "steel or iron production")
+        # based on this, we need to decide to obtain the relevant precursors for CBAM scope definition, as some precursors are relevant for steel but not for iron, and vice versa.
+        if steel_or_iron_act == 'steel':
+            cbam_precursors_excl = cbam_precursors_steel_excl
+        elif steel_or_iron_act == 'iron':
+            cbam_precursors_excl = cbam_precursors_iron_excl   
+        elif steel_or_iron_act == 'both':
+            cbam_precursors_excl = cbam_precursors_iron_excl # iron precursors are overlapping but add hydrogen.
+        else:
+            print(f"WARNING: 'steel or iron production' comment field not found or not correctly filled for activity '{act['name']}' [{act['location']}], precursors relevant for both steel and iron as default.")
+
         for exc in act.exchanges():
             # Calculate elapsed and estimated remaining time
             elapsed_time = time.time() - start_time
@@ -722,7 +993,7 @@ def annotate_exchanges_with_cbam(db_name, define_scope_cbam_func, cbam_precursor
                 exc.save()
         act.save()
 
-def annotate_act_exchanges_with_cbam(act, define_scope_cbam_func, cbam_precursors_excl, 
+def annotate_act_exchanges_with_cbam(act, define_scope_cbam_func, cbam_precursors_excl, # 
                                  annotation_scope = 'scope', annotation_cbam_included = 'cbam'):
     """
     Annotate exchanges in a Brightway2 database with CBAM-related metadata.
@@ -2240,92 +2511,133 @@ def add_transport_exchanges(continent, db_sel, matched_database, km_transport_tr
 
     return exchanges_to_add
 
-def calculate_cbam_alpha(db_name, method, cbam_precursors_excl, threshold=90, cbam_threshold=0.15):
+def calculate_cbam_alpha(
+    db_name,
+    method,
+    cbam_act_to_get_alpha_steel,
+    cbam_act_to_get_alpha_iron,
+    cbam_precursors_excl_steel=CBAM_RELEVANT_PRECURSORS_STEEL,
+    cbam_precursors_excl_iron=CBAM_RELEVANT_PRECURSORS_IRON,
+    threshold=90,
+    cbam_threshold=0.15
+):
     """
     Calculate alpha: the average share of CBAM-covered emissions for matched activities.
-    
-    Parameters:
-    - db_name: str, name of the Brightway2 database to analyze.
-    - method: list or tuple, the impact assessment method to use (e.g. ['IPCC 2021', 'climate change', 'GWP 100a']).
-    - cbam_precursors_excl: dict, mapping of categories to (include_terms, exclude_terms).
-    - threshold: int, fuzzy match threshold for term inclusion/exclusion.
-    - cbam_threshold: float, minimum acceptable CBAM share to include in the average.
-    
-    Returns:
-    - alpha: float, mean CBAM share for relevant activities.
+    Uses steel/iron-specific CBAM precursor lists depending on the matched activity type.
     """
-    
+
     stored_data = []
     share_cbams = []
-    matched_rows = []
 
-    # Identify relevant activities
+    # Build one combined list of rules but keep the material label
+    rules = []
+    for dct, material in [(cbam_act_to_get_alpha_steel, "steel"),
+                          (cbam_act_to_get_alpha_iron, "iron")]:
+        # Expect dict format: {key: (include_terms, exclude_terms)}
+        for _, (include_terms, exclude_terms) in dct.items():
+            rules.append((material, include_terms, exclude_terms))
+
+    # 1) Identify relevant activities and label them as steel/iron
+    matched_rows = []  # each entry: dict with act identifiers + material
     for act in bw.Database(db_name):
-        activity_name = act['name'].lower()
-        ref_product = act['reference product'].lower()
-        
-        for include_terms, exclude_terms in cbam_precursors_excl.values():
-            if (
-                any(fuzz.token_set_ratio(activity_name, term.lower()) >= threshold for term in include_terms) and
-                any(fuzz.token_set_ratio(ref_product, term.lower()) >= threshold for term in include_terms)
-            ):
-                if not any(fuzz.partial_ratio(activity_name, term.lower()) >= threshold for term in exclude_terms):
-                    matched_rows.append([act['name'], act['reference product'], act['location'], act['unit']])
-                    break  # Avoid duplicate matches
+        activity_name = (act.get("name") or "").lower()
+        ref_product = (act.get("reference product") or "").lower()
 
-    # Analyze emissions for matched activities
-    for i, row in enumerate(matched_rows):
-        initiated = False
-        if 'hydrogen production' in str(row[0]).lower():
-            continue  # Skip hydrogen production activities
+        for material, include_terms, exclude_terms in rules:
+            inc_ok = (
+                any(fuzz.token_set_ratio(activity_name, term.lower()) >= threshold for term in include_terms)
+                and any(fuzz.token_set_ratio(ref_product, term.lower()) >= threshold for term in include_terms)
+            )
+            if not inc_ok:
+                continue
 
-        act_sel = [act for act in bw.Database(db_name) 
-                   if act['name'] == row[0] and act['reference product'] == row[1] and act['location'] == row[2]][0]
-        
-        # Initialize or update LCA
-        if not initiated:
+            exc_ok = not any(
+                fuzz.partial_ratio(activity_name, term.lower()) >= threshold for term in exclude_terms
+            )
+            if not exc_ok:
+                continue
+
+            matched_rows.append({
+                "name": act["name"],
+                "reference product": act["reference product"],
+                "location": act["location"],
+                "unit": act["unit"],
+                "material": material,  # <-- KEY: steel vs iron
+            })
+            break  # avoid duplicate matches (first match wins)
+
+    # 2) Analyze emissions for matched activities
+    lca = None  # init once, reuse via redo
+    for row in matched_rows:
+
+        # pick the exact activity
+        act_sel = next(
+            act for act in bw.Database(db_name)
+            if act["name"] == row["name"]
+            and act["reference product"] == row["reference product"]
+            and act["location"] == row["location"]
+        )
+
+        # Choose precursor list based on material label
+        cbam_precursors_excl = (
+            cbam_precursors_excl_iron if row["material"] == "iron" else cbam_precursors_excl_steel
+        )
+
+        # Init LCA once; then redo for each activity/exchange
+        if lca is None:
             lca = bw.LCA({act_sel: 1}, method=method)
             lca.lci()
             lca.lcia()
-            initiated = True
         else:
             lca.redo_lcia({act_sel: 1})
 
         result_array = []
-        cbam_amount = 0
-        non_cbam_amount = 0
+        cbam_amount = 0.0
+        non_cbam_amount = 0.0
 
         for exc in act_sel.exchanges():
-            scope_cbam = define_scope_cbam(exc.as_dict())
+            # IMPORTANT: pass the *selected* precursor list for this activity
+            scope_cbam = define_scope_cbam(exc.as_dict(), cbam_precursors_excl)
 
-            if exc['type'] == 'technosphere':
-                lca.redo_lcia({exc.input: exc['amount']})
-                amount = lca.score
-            elif exc['type'] == 'biosphere':
+            if exc["type"] == "technosphere":
+                lca.redo_lcia({exc.input: exc["amount"]})
+                amount = float(lca.score)
+            elif exc["type"] == "biosphere":
+                # biosphere CF extraction (same approach as your original)
                 cf = lca.characterization_matrix[lca.biosphere_dict[exc.input], :].sum()
-                amount = cf * exc['amount']
+                amount = float(cf * exc["amount"])
             else:
                 continue
 
-            result_array.append((exc['name'], amount, scope_cbam['scope'], scope_cbam['cbam']))
+            result_array.append((exc["name"], amount, scope_cbam.get("scope"), scope_cbam.get("cbam")))
 
-            if scope_cbam['cbam']:
+            if scope_cbam.get("cbam"):
                 cbam_amount += amount
             else:
                 non_cbam_amount += amount
 
         total = cbam_amount + non_cbam_amount
         if total == 0:
-            print("Warning: Zero total emissions for", act_sel['name'])
+            print("Warning: Zero total emissions for", act_sel["name"])
             continue
 
         share_cbam = cbam_amount / total
         if share_cbam < cbam_threshold:
-            print("Skipping low CBAM share:", share_cbam, act_sel['name'])
+            print("Skipping low CBAM share:", share_cbam, act_sel["name"])
             continue
 
-        share_cbams.append(min(share_cbam, 1))  # Ensure share ≤ 1
-        stored_data.append(result_array)
+        share_cbams.append(min(float(share_cbam), 1.0))
 
-    alpha = float(np.mean(share_cbams)) if share_cbams else 0
+        stored_data.append({
+            "activity_name": act_sel["name"],
+            "location": act_sel["location"],
+            "reference_product": act_sel["reference product"],
+            "unit": act_sel["unit"],
+            "material": row["material"],  # <-- keep for traceability
+            "cbam_share": float(share_cbam),
+            "exchanges": result_array,
+            "cbam_precursors_used": "iron" if row["material"] == "iron" else "steel",
+        })
+
+    alpha = float(np.mean(share_cbams)) if share_cbams else 0.0
     return alpha, stored_data
