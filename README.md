@@ -1,6 +1,6 @@
 # `Steel_CBAM`
 
-`Steel_CBAM` is a repository designed to quantify the climate-coverage of the European Union's Carbon Border Adjustment Mechanism (CBAM) for the global steel industry. It combines (prospective) life cycle assessment (LCA) with regionalized production data. The code was developed in the context of project TRANSIENCE (see Acknowledgements).
+`Steel_CBAM` is a repository designed to quantify the climate impact for the global steel industry. It combines (prospective) life cycle assessment (LCA) with regionalized production data. The code was developed in the context of project TRANSIENCE (see Acknowledgements).
 
 ---
 
@@ -8,13 +8,13 @@
 
 ```bash
 steel_cbam_assessment/
-├── data/                                 # Input datasets for regional steel production, emissions, and CBAM assumptions
+├── data/                                 # Input datasets for regional steel production, emissions, and assumptions
 ├── figs/                                 # Final high-quality figures and plots
 ├── logs/                                 # Logs from processing
 ├── results/                              # Processed LCA results for each scenario
 ├── 0_set_up_lca_db_gen_acts.ipynb        # Prepares background LCA databases using premise
 ├── 1_steel_dbs_setup.ipynb               # Sets up steel production databases used
-├── 2_steel_assessment.ipynb              # Main notebook to perform CBAM impact assessment and for creating databases
+├── 2_steel_assessment.ipynb              # Main notebook to perform Impact assessment and for creating databases
 ├── 3_prospective_analysis_REMIND         # Additional notebook for calculating prospective impacts using REMIND IAM
 ├── 4_create_sensitivity_figs.ipynb       # Sensitivity analysis visualizations
 ├── config.py                             # Configuration and parameter settings
@@ -40,7 +40,7 @@ Generates prospective LCA databases using the [`premise`](https://github.com/pol
 Configures region-specific steel production routes using the databases.
 
 ### `2_steel_assessment.ipynb`
-Performs the main CBAM assessment by first creating new databases and then calculating environmental impacts under various scenarios, regions, and timeframes. 
+Performs the main assessment by first creating new databases and then calculating environmental impacts under various scenarios, regions, and timeframes. 
 
 ### `3_prospective_analysis_REMIND.ipynb`
 Additional notebook for calculating prospective impacts using REMIND IAM.
@@ -79,7 +79,6 @@ conda activate bw_reg_prem
 
 Use the outputs to:
 
-- Evaluate CBAM coverage for iron and steel industry.
 - Compare climate change impacts.
 - Analyze different future scenarios and sensitivity cases.
 
@@ -88,7 +87,7 @@ Use the outputs to:
 ## License, citing, and scientific references
 
 If you use this repository, the data, or any of the included code, please cite the following paper:  
-*Terlouw, T., Harpprecht, C., & Bauer, C. (2026). Facility-specific GHG emissions of global steel production and their alignment with the EU Carbon Border Adjustment Mechanism. In Review.*
+*Terlouw, T., Harpprecht, C., & Bauer, C. (2026). Facility-specific GHG emissions of current and future global iron and steel production. In Review.*
 
 Following the Creative Commons license of the Global Iron and Steel Tracker ([https://globalenergymonitor.org](https://globalenergymonitor.org/projects/global-iron-and-steel-tracker/download-data/)) and Green Steel Tracker ([https://www.industrytransition.org](https://www.industrytransition.org/green-steel-tracker/)), we realize that this is a work derived from their material. However, we are solely liable and responsible for this derived work, and it is not endorsed by those sources in any manner.
 
