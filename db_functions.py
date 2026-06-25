@@ -1,6 +1,7 @@
-import brightway2 as bw
+#import brightway2 as bw
 from config import *
 import premise as pr
+import bw2data as bd
 from private_keys import KEY_PREMISE
 from functools import partial
 from bw2io.importers.base_lci import LCIImporter
@@ -58,12 +59,12 @@ def create_database(db_name):
     Database 'new_db' already exists. Operation aborted.
     """
     # Check if the database already exists
-    if db_name in bw.databases:
+    if db_name in bd.databases:
         print(f"Database '{db_name}' already exists. Operation aborted.")
         return
     
     # Create and register the new database
-    db = bw.Database(db_name)
+    db = bd.Database(db_name)
     db.register()
     print(f"Database '{db_name}' has been created and registered.")
 
@@ -82,10 +83,10 @@ def generate_reference_database():
     >>> generate_reference_database()
     """
     # Delete old reference database with the same name
-    for db_name in list(bw.databases):
+    for db_name in list(bd.databases):
         if NAME_REF_DB in db_name:
             print(db_name)
-            del bw.databases[db_name]
+            del bd.databases[db_name]
 
     # Create a new reference database using NewDatabase
     ndb = pr.NewDatabase(
@@ -94,10 +95,10 @@ def generate_reference_database():
         source_version=EI_VERSION,
         key=KEY_PREMISE,
         biosphere_name= BIOSPHERE_DB,
-        additional_inventories=[
-            {"filepath": r"data\H2-DRI_LCI.xlsx", "ecoinvent version": "3.9.1"},
-            {"filepath": r"data\BF-BOF-CCS_Carina.xlsx", "ecoinvent version": "3.9.1"},         
-            ]
+        #additional_inventories=[
+        #    {"filepath": r"data\H2-DRI_LCI.xlsx", "ecoinvent version": "3.9.1"},
+        #    {"filepath": r"data\BF-BOF-CCS_Carina.xlsx", "ecoinvent version": "3.9.1"},         
+        #    ]
     )
 
     # Fix suggested by R.S. since premise expect modifications
@@ -150,7 +151,7 @@ def generate_future_ei_dbs(scenarios = ["SSP2-Base", "SSP2-PkBudg1150","SSP2-PkB
                                             "update_fuels", "update_emissions", "update_two_wheelers"
                                             "update_cars", "update_trucks", "update_buses"]}
 
-                if string_db not in bw.databases:
+                if string_db not in bd.databases:
                     list_spec_scenarios.append(dict_spec)
                     list_names.append(string_db)
                 else:
@@ -158,7 +159,7 @@ def generate_future_ei_dbs(scenarios = ["SSP2-Base", "SSP2-PkBudg1150","SSP2-PkB
             else:
                 dict_spec = {"model": iam, "pathway": pt, "year": yr}
 
-                if string_db not in bw.databases:
+                if string_db not in bd.databases:
                     list_spec_scenarios.append(dict_spec)
                     list_names.append(string_db)
                 else:
@@ -190,10 +191,10 @@ def generate_prospective_lca_dbs(list_spec_scenarios, list_names):
             source_version=EI_VERSION,
             key=KEY_PREMISE,
             biosphere_name=BIOSPHERE_DB,
-            additional_inventories=[
-                {"filepath": r"data\H2-DRI_LCI.xlsx", "ecoinvent version": "3.9.1"},
-                {"filepath": r"data\BF-BOF-CCS_Carina.xlsx", "ecoinvent version": "3.9.1"},                    
-                ]
+            #additional_inventories=[
+            #    {"filepath": r"data\H2-DRI_LCI.xlsx", "ecoinvent version": "3.9.1"},
+            #    {"filepath": r"data\BF-BOF-CCS_Carina.xlsx", "ecoinvent version": "3.9.1"},                    
+            #    ]
         )
 
         print("START UPDATING")
@@ -214,16 +215,16 @@ def delete_project(bw, project_name):
     - str: A message indicating the result of the deletion attempt.
     """
     # List all existing projects
-    print("Existing projects:", list(bw.projects))
+    print("Existing projects:", list(bd.projects))
 
     # Check if the project exists before attempting to delete it
-    if project_name in bw.projects:
+    if project_name in bd.projects:
         # Set the project to be deleted as the current project
-        bw.projects.set_current(project_name)
+        bd.projects.set_current(project_name)
         
         # Delete the project
-        bw.projects.delete_project(project_name)
-        bw.projects.purge_deleted_directories()
+        bd.projects.delete_project(project_name)
+        bd.projects.purge_deleted_directories()
         return f"Project '{project_name}' has been deleted."
     else:
         return f"Project '{project_name}' does not exist."
@@ -266,7 +267,7 @@ def process_import(db_name, new_activities, iam='image'):
     importer.apply_strategies()
 
     # Match databases
-    for db in bw.databases:
+    for db in bd.databases:
         if f'ecoinvent_{iam}' in str(db) or BIOSPHERE_DB in str(db) or NAME_REF_DB in str(db):
             importer.match_database(db)
 
@@ -275,7 +276,7 @@ def process_import(db_name, new_activities, iam='image'):
     importer.write_excel(only_unlinked=True)
     importer.write_database()
 
-def match_year_to_database(year, iam_model='image_SSP2-RCP26', ref_db = NAME_REF_DB):
+def match_year_to_database(year, iam_model='image_L', ref_db = NAME_REF_DB):
     """
     Matches a given year to a database based on defined year ranges.
     

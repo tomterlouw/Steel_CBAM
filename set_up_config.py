@@ -57,10 +57,10 @@ def make_build_caches(
     w,
     NAME_REF_DB: str,
     BIOSPHERE_DB: str,
-    future_db_name: str,            # e.g. "ecoinvent_image_SSP2-RCP26_2040_base"
+    future_db_name: str,            # e.g. "ecoinvent_image_SSP2-L_2040_base"
     FUTURE_YEAR: int,
     match_year_to_database: Callable[[int], str],
-    init_model: str = 'image_SSP2-RCP26',
+    init_model: str = 'image_SSP2-L',
 ) -> BuildCaches:
     database_sel, bio_db_w = build_database_sel_once(w, NAME_REF_DB, BIOSPHERE_DB, future_db_name)
     matched_database = match_year_to_database(FUTURE_YEAR, init_model)
@@ -124,15 +124,10 @@ def build_regionalized_steel_db_for_case(
     bw,
     db_name_base: str,                     # your "db_name" used in create_regionalized_activity signature
     process_import: Callable[..., None],
-    annotate_exchanges_with_cbam: Callable[..., None],
-    define_scope_cbam: Callable[..., Any],
     create_regionalized_activity: Callable[..., Tuple[dict, Any, str]],
     process_exchanges: Callable[..., list],
-    add_transport_exchanges: Callable[..., list],
     match_year_to_database: Callable[[int], str],  # (kept for compatibility; caches already has matched_database)
     country_to_iso2: Callable[[str], str],
-    add_transport: bool = False,
-    km_transport_train: int = 500,
     start_idx: int = 0,
 ) -> None:
     """
@@ -180,7 +175,6 @@ def build_regionalized_steel_db_for_case(
             )
 
             if new_act["name"] in seen_names:
-                # print(f"WARNING: duplicate activity name {new_act['name']} (Plant ID {row.get('Plant ID')})")
                 continue
             seen_names.add(new_act["name"])
 
@@ -196,78 +190,119 @@ def build_regionalized_steel_db_for_case(
                 plant_type=row["steel_or_iron_production"],
             )
 
-            # do not include transport activities
-            if add_transport:
-                transport_ex = add_transport_exchanges(
-                    row["Continent"],
-                    db_sel,
-                    matched_database,
-                    km_transport_train=km_transport_train,
-                )
-                new_act["exchanges"].extend(transport_ex)
             new_acts.append(new_act)
-
+            
     process_import(case.db_name_out, new_acts)
 
-    annotate_exchanges_with_cbam(
-        db_name=case.db_name_out,
-        define_scope_cbam_func=define_scope_cbam
-    )
+def build_regionalized_steel_db_for_case(
+    *,
+    plants_df: pd.DataFrame,
+    case: CaseConfig,
+    caches: BuildCaches,
+    bw,
+    db_name_base: str,
+    process_import: Callable[..., None],
+    create_regionalized_activity: Callable[..., Tuple[dict, Any, str]],
+    process_exchanges: Callable[..., list],
+    match_year_to_database: Callable[[int], str],  # kept for compatibility
+    country_to_iso2: Callable[[str], str],
+    start_idx: int = 0,
+) -> None:
+    """
+    Builds BW database for the selected case. Reused for H2/CCS/EW/EW_LC.
+    Optimized, but keeps rows as pandas Series for compatibility.
+    """
+    if case.db_name_out in bw.databases:
+        del bw.databases[case.db_name_out]
+
+    new_acts = []
+    seen_names = set()
+
+    matched_database = caches.matched_database
+    db_sel = caches.database_sel[matched_database]
+    year = caches.year
+    bio_db_w = caches.bio_db_w
+    iso2_cache = caches.iso2_cache
+    db_name_out = case.db_name_out
+    dict_acts = case.dict_acts
+
+    _iter_end_uses = iter_end_uses
+    _make_plant_name_and_tech_key = make_plant_name_and_tech_key
+    _get_iso2_cached = get_iso2_cached
+    _create_regionalized_activity = create_regionalized_activity
+    _process_exchanges = process_exchanges
+    _append = new_acts.append
+    _seen_add = seen_names.add
+
+    total = len(plants_df)
+
+    for i, (index, row) in enumerate(plants_df.iterrows(), start=1):
+        if i == 1 or i % 100 == 0 or i == total:
+            print(f"Making steel facility activities: {i}/{total}", end="\r", flush=True)
+
+        if index < start_idx:
+            continue
+
+        row = row.copy()
+        row = row.fillna(np.nan)
+
+        steel_classification = row["steel_classification"]
+        class_dict = dict_acts.get(steel_classification)
+        if class_dict is None:
+            continue
+
+        iso2 = _get_iso2_cached(row["Country/Area"], iso2_cache, country_to_iso2)
+        plant_type = row["steel_or_iron_production"]
+
+        for end_use in _iter_end_uses(row):
+            plant_name, tech_key = _make_plant_name_and_tech_key(row, end_use)
+
+            match_activity = class_dict.get(tech_key)
+            if match_activity is None:
+                continue
+
+            new_act, activity_to_adapt, new_code = _create_regionalized_activity(
+                db_sel,
+                match_activity,
+                iso2,
+                row,
+                end_use,
+                db_name_base,
+                plant_name,
+                year,
+            )
+
+            act_name = new_act["name"]
+            if act_name in seen_names:
+                continue
+            _seen_add(act_name)
+
+            new_act["exchanges"] = _process_exchanges(
+                activity_to_adapt,
+                row,
+                matched_database,
+                db_name_out,
+                iso2,
+                db_sel,
+                new_code,
+                bio_db_w,
+                plant_type=plant_type,
+            )
+
+            _append(new_act)
+
+    print(" " * 80, end="\r")
+    process_import(db_name_out, new_acts)
 
 
 # -----------------------
 # Postprocessing (shared)
 # -----------------------
 
-def add_scope_and_cbam_columns(
-    df: pd.DataFrame,
-    *,
-    alpha: float,
-    contri_col: str = "lca_impact_contri_climate change",
-    sum_scope_contributions: Callable[[Any], Any] = None,
-    sum_cbam_contributions: Callable[..., Any] = None,
-    sum_cbam_contributions_emission_factor: Optional[Callable[..., Any]] = None,
-    production_col: str = "production volume",
-    prefix: str = "",
-) -> pd.DataFrame:
-    """
-    Adds scope 1/2/3 and CBAM splits (and optional emission-factor variant).
-    prefix lets you avoid having per-case column names like cbam_true_total_ew_lc.
-    """
-    out = df.copy()
-
-    if sum_scope_contributions is not None:
-        out[["Scope 1", "Scope 2", "Scope 3"]] = out[contri_col].apply(sum_scope_contributions).apply(pd.Series)
-
-    if sum_cbam_contributions is not None:
-        out[[f"{prefix}cbam_true", f"{prefix}cbam_false"]] = (
-            out[contri_col].apply(sum_cbam_contributions, alpha=alpha).apply(pd.Series)
-        )
-        out[f"{prefix}cbam_true_total_cc"] = out[f"{prefix}cbam_true"] * out[production_col]
-        out[f"{prefix}cbam_false_total_cc"] = out[f"{prefix}cbam_false"] * out[production_col]
-
-        denom = out[f"{prefix}cbam_true_total_cc"] + out[f"{prefix}cbam_false_total_cc"]
-        out[f"{prefix}share_cbam_covered"] = out[f"{prefix}cbam_true_total_cc"] / denom
-        out.loc[out[f"{prefix}share_cbam_covered"] < 0, f"{prefix}share_cbam_covered"] = 1
-
-    if sum_cbam_contributions_emission_factor is not None:
-        out[[f"{prefix}cbam_true_efactor", f"{prefix}cbam_false_efactor"]] = (
-            out[contri_col].apply(sum_cbam_contributions_emission_factor, alpha=alpha).apply(pd.Series)
-        )
-        out[f"{prefix}cbam_true_total_cc_efactor"] = out[f"{prefix}cbam_true_efactor"] * out[production_col]
-        out[f"{prefix}cbam_false_total_cc_efactor"] = out[f"{prefix}cbam_false_efactor"] * out[production_col]
-
-        denom2 = out[f"{prefix}cbam_true_total_cc_efactor"] + out[f"{prefix}cbam_false_total_cc_efactor"]
-        out[f"{prefix}share_cbam_covered_efactor"] = out[f"{prefix}cbam_true_total_cc_efactor"] / denom2
-        out.loc[out[f"{prefix}share_cbam_covered_efactor"] < 0, f"{prefix}share_cbam_covered_efactor"] = 1
-
-    return out
-
-
 def emissions_intensity(
     df: pd.DataFrame,
     *,
-    emissions_col: str = "Plant_GHG_emissions_Mt_wo_transport",
+    emissions_col: str = "Plant_GHG_emissions_Mt",
     production_col: str = "production volume",
 ) -> float:
     total_em = float(df[emissions_col].sum())
@@ -288,11 +323,8 @@ def run_case(
     db_name_base: str,
     # build deps
     process_import,
-    annotate_exchanges_with_cbam,
-    define_scope_cbam,
     create_regionalized_activity,
     process_exchanges,
-    add_transport_exchanges,
     match_year_to_database,
     country_to_iso2,
     # lca deps
@@ -300,13 +332,7 @@ def run_case(
     MY_METHODS,
     european_countries,
     dict_types,
-    sum_exchanges_wo_transport,
     time_tag: str,
-    # cbam/scope deps
-    alpha: float,
-    sum_scope_contributions,
-    sum_cbam_contributions,
-    sum_cbam_contributions_emission_factor=None,
     db_tag='',
 ) -> pd.DataFrame:
     """
@@ -324,11 +350,8 @@ def run_case(
             bw=bw,
             db_name_base=db_name_base,
             process_import=process_import,
-            annotate_exchanges_with_cbam=annotate_exchanges_with_cbam,
-            define_scope_cbam=define_scope_cbam,
             create_regionalized_activity=create_regionalized_activity,
             process_exchanges=process_exchanges,
-            add_transport_exchanges=add_transport_exchanges,
             match_year_to_database=match_year_to_database,
             country_to_iso2=country_to_iso2,
         )
@@ -345,20 +368,8 @@ def run_case(
         start_idx=0,
         european_countries=european_countries,
         dict_types=dict_types,
-        sum_exchanges_wo_transport=sum_exchanges_wo_transport,
         time_tag=time_tag,
         db_tag=db_tag,
     )
-
-    # If contri is False, you may want to skip CBAM/scope columns
-    if case.contri:
-        df = add_scope_and_cbam_columns(
-            df,
-            alpha=alpha,
-            sum_scope_contributions=sum_scope_contributions,
-            sum_cbam_contributions=sum_cbam_contributions,
-            sum_cbam_contributions_emission_factor=sum_cbam_contributions_emission_factor,
-            prefix="",  # keep standard names
-        )
 
     return df

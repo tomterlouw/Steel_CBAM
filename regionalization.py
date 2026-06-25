@@ -21,6 +21,8 @@ with open(r"data\iam_variables_mapping\topologies\remind-topology.json", "r", en
     REMIND_TOPOLOGY = json.load(f)
 with open(r"data\iam_variables_mapping\topologies\image-topology.json", "r", encoding="utf-8") as f:
     IMAGE_TOPOLOGY = json.load(f)
+with open(r"data\iam_variables_mapping\topologies\ei312-topology.json", "r", encoding="utf-8") as f:
+    EI_TOPOLOGY = json.load(f)
 
 DF_CVS = pd.read_csv("data\mean_cfs.csv", index_col="ISO_A3_EH")
 
@@ -53,6 +55,7 @@ def manually_add_definitions(geomatcher, data: dict, namespace: str = "", relati
 print("Adding REMIND and IMAGE topology using regionalization.py")
 manually_add_definitions(geomatcher, REMIND_TOPOLOGY, namespace="", relative=True)
 manually_add_definitions(geomatcher, IMAGE_TOPOLOGY, namespace="", relative=True)
+manually_add_definitions(geomatcher, EI_TOPOLOGY, namespace="", relative=True)
 
 DF_CVS = pd.read_csv("data/mean_cfs.csv", index_col="ISO_A3_EH")
 
@@ -360,7 +363,7 @@ def create_regionalized_activity(
     )
 
     possible_locations = [act["location"] for act in activities_to_adapt_init]
-
+    
     # Step 2: Determine best matching location
     best_matched_loc = (
         match_best_location(iso2, possible_locations)[0]
@@ -413,326 +416,6 @@ def create_regionalized_activity(
 
     return new_act_dict, activity_to_adapt, new_code
 
-def process_exchanges(activity_to_adapt, row, matched_database, db_name, iso2, db_sel, new_code, bio_db_w, plant_type,
-                      dict_power_acts=dict_power_acts, dict_hydrogen_acts=dict_hydrogen_acts):
-    """
-    Transform and regionalize exchanges from a base activity.
-
-    This function processes exchanges in a given activity by modifying their location, linking them to external 
-    datasets, and adjusting inputs, amounts, and metadata as needed. It handles different types of exchanges 
-    (production, technosphere, and biosphere) and applies logic for electricity, hydrogen, and iron-related 
-    inputs based on plant characteristics and power source.
-
-    Main operations include:
-        - Rebuilding production exchanges with updated references.
-        - Regionalizing electricity exchanges (market or onsite generation).
-        - Replacing hydrogen inputs with region-specific sources.
-        - Updating iron production exchanges and substituting hydrogen flows.
-        - Annotating exchanges with CBAM-relevant scope metadata.
-
-    Parameters:
-        activity_to_adapt (dict): Activity containing the original exchanges to be adapted.
-        row (pandas.Series): Row with plant-specific data (e.g. power classification, location).
-        matched_database (str): Name of the external database to link inputs to.
-        db_name (str): Name of the current project database (used for production exchanges).
-        iso2 (str): ISO 3166-1 alpha-2 country code used for matching regional datasets.
-        db_sel (object): Selector or database interface for querying external activities.
-        new_code (str): New activity code used for linking production and output exchanges.
-        dict_power_acts (dict): Mapping of power classification to generator activity name and product.
-        dict_hydrogen_acts (dict): Mapping of power classification to hydrogen production activity name and product.
-
-    Returns:
-        list: A list of processed and merged exchange dictionaries.
-
-    Raises:
-        ValueError: If an unknown exchange type is encountered.
-    """
-    new_exchanges = []
-    elect_type_searched = 0
-    
-    for exc in activity_to_adapt['exchanges']:     
-        #exc['input'] = None  # Reset before assigning
-        if 'production' == exc['type']:
-            new_exchanges.append( 
-                {'location': exc['location'],
-                 'database': db_name,
-                 'name': exc['name'],
-                 'reference product': exc['product'],
-                 'unit': exc['unit'],
-                 'type': 'production',
-                 'amount': exc['amount'],
-                 'input': (db_name, new_code),
-                 'output': (db_name, new_code)  })
-            
-        elif 'technosphere' == exc['type']:
-            #1 Power change
-            if 'for electricity' in exc['name'] and 'electricity' in exc['product'] and exc['unit'] == 'kilowatt hour' and row['power_classification']!='grid':
-                if elect_type_searched == 0:
-                    # this is to avoid searching again for the same new electricity exchange if there are multiple power inputs 
-                    power_generator = dict_power_acts[row['power_classification']]
-                    power_generator_acts = w.get_many(db_sel,
-                                                      w.equals("name", power_generator[0]),
-                                                      w.equals("reference product", power_generator[1]) )
-                    
-                    possible_locations = [act['location'] for act in power_generator_acts]
-            
-                    best_matched_loc = match_best_location(iso2, possible_locations)[0] if iso2 not in possible_locations else iso2
-                    #print(db_sel,power_generator[0],power_generator[1],best_matched_loc)
-
-                    # Needed to link to dataset from external datab)ase
-                    act_elect = w.get_one(db_sel,
-                                    w.equals("name", power_generator[0]),
-                                    w.equals("reference product", power_generator[1]),
-                                    w.equals("unit", 'kilowatt hour'),
-                                    w.equals("location", best_matched_loc) ).copy()
-
-                    elect_type_searched = 1
-
-                exc=exc.copy()
-                
-                # Note: we will have to provide the input as we link to external database
-                exc_new = {'location': act_elect['location'],
-                                     'name': act_elect['name'],
-                                     'reference product': act_elect['reference product'],
-                                     'unit': act_elect['unit'],
-                                     'type': 'technosphere',
-                                     #'database': db_name,
-                                     'amount':exc['amount'],#IMPORTANT: take the initital amount in the exchange
-                                     'input': (matched_database, act_elect['code'])  
-                          }
-                new_exchanges.append(exc_new)
-                
-            #2 Power change GRID
-            elif 'market group for electricity, ' in exc['name'] and iso2 not in ["BR", "IN", "US", "CN", "CA", "UG"] and exc['unit']=='kilowatt hour' and row['power_classification']=='grid':
-                # Further regionalize power exchanges
-                exc = exc.copy()
-                init_name = exc['name']
-                voltage_level = exc['name'].split("market group for electricity, ")[-1]
-                exc['name'] = f"market for electricity, {voltage_level}"
-                #print(exc['name'], exc['location'])
-                # Needed to link to dataset from external database
-                try:
-                    act = w.get_one(db_sel,
-                                    w.equals("name", exc['name']),
-                                    w.equals("reference product", exc['product']),
-                                    w.equals("unit", exc['unit']),
-                                    w.equals("location", iso2) ).copy()
-                    exc['location'] = iso2
-                except:
-                    # If an error, then we will have to search for best matching one
-                    activities_to_adapt_init = w.get_many(
-                                                db_sel,
-                                                w.equals("name", exc['name']),
-                                                w.equals("reference product", exc['product']),
-                                            )
-            
-                    possible_locations = [act['location'] for act in activities_to_adapt_init]
-                    best_matched_loc = match_best_location(iso2, possible_locations)[0] if iso2 not in possible_locations else iso2
-                    
-                    if best_matched_loc == 'GLO':
-                        print(f"Global dataset used for combi: {exc['name'],exc['product'],iso2,best_matched_loc, possible_locations}")
-                        exc['name'] = init_name
-                
-                    act = w.get_one(db_sel, w.equals("name", exc['name']),\
-                                    w.equals("reference product", exc['product']),
-                                    w.equals("unit", exc['unit']),
-                                    w.equals("location", best_matched_loc) )
-
-                    exc['location'] = best_matched_loc
-                
-                # Note: we will have to provide the input as we link to external database
-                exc['input'] = (matched_database, act['code'])          
-                new_exchanges.append(exc)
-
-            # We should also modify/replace the hydrogen source for DRI steel/iron, if needed:
-            elif ('hydrogen, gaseous' in exc['product']):
-                if row['power_classification']!='grid':
-                    if row['power_classification'] == 'renewable' or row['power_classification'] == 'pv':
-                        # now we have to find the cf of the country
-                        cf_rounded = get_mean_cf_pv_from_iso2(iso2)
-                        hydrogen_source = (f'hydrogen production, gaseous, 30 bar, from PEM electrolysis, solar PV ground-mounted, global cf [{cf_rounded}]', 
-                                           'hydrogen, gaseous, 30 bar')
-                    else:
-                        hydrogen_source = dict_hydrogen_acts[row['power_classification']]
-                else:
-                    hydrogen_source = ('hydrogen production, gaseous, 30 bar, from PEM electrolysis, power from market for electricity, medium voltage', 
-                                       'hydrogen, gaseous, 30 bar')
-
-                hydrogen_generator_acts = w.get_many(db_sel,
-                                                  w.equals("name", hydrogen_source[0]),
-                                                  w.equals("reference product", hydrogen_source[1]) )
-                
-                possible_locations = [act['location'] for act in hydrogen_generator_acts]
-        
-                best_matched_loc = match_best_location(iso2, possible_locations)[0] if iso2 not in possible_locations else iso2
-                #print(hydrogen_source[0],hydrogen_source[1],best_matched_loc)
-
-                # Needed to link to dataset from external database
-                act_h2 = w.get_one(db_sel,
-                                w.equals("name", hydrogen_source[0]),
-                                w.equals("reference product", hydrogen_source[1]),
-                                w.equals("unit", 'kilogram'),
-                                w.equals("location", best_matched_loc) )
-
-                exc_new = {'location': act_h2['location'],
-                                     'name': act_h2['name'],
-                                     'reference product': act_h2['reference product'],
-                                     'unit': act_h2['unit'],
-                                     'type': 'technosphere',
-                                     #'database': db_name,
-                                     'amount':exc['amount'],#IMPORTANT: take the initital amount in the exchange
-                                     'input': (matched_database, act_h2['code'])}
-                new_exchanges.append(exc_new)
-
-            # We should also modify/replace the hydrogen source (h2-dri) and regionalize iron production IF produced locally at the plant
-            elif (plant_type != 'steel') and ('technosphere' == exc['type'] and "iron" in str(exc['product']) and 
-                                              ("iron production" in str(exc['name']) or 'market for pig iron' in str(exc['name']))
-                                              and not any(word in exc['name'] for word in ['treatment', 'sludge', 'ash', 'residues', 'waste'])):
-                exc = exc.copy()
-
-                if 'market for pig iron' == str(exc['name']):
-                    exc['name'] = 'pig iron production' # we do this so that we can better regionalize the iron production exchange, but we will keep the original name in the comment for clarity
-
-                init_amount = exc['amount']
-            
-                act_iron_init = w.get_one(db_sel,
-                                          w.equals("name", exc['name']),
-                                          w.equals("reference product", exc['product']),
-                                          w.equals("unit", exc['unit']),
-                                          w.equals("location", exc['location']) ) 
-
-                act_iron = act_iron_init.copy()
-                act_iron['location'] = iso2
-                act_iron = relink_technosphere_exchanges(act_iron, db_sel, contained=False) 
-
-                for exc_2 in act_iron['exchanges']:
-                    exc_2_copy = exc_2.copy()
-                    if 'hydrogen, gaseous' in str(exc_2_copy['product']):
-                        if row['power_classification']!='grid':
-                            if row['power_classification'] == 'renewable' or row['power_classification'] == 'pv':
-                                # now we have to find the cf of the country
-                                cf_rounded = get_mean_cf_pv_from_iso2(iso2)
-                                hydrogen_source = (f'hydrogen production, gaseous, 30 bar, from PEM electrolysis, solar PV ground-mounted, global cf [{cf_rounded}]', 
-                                                'hydrogen, gaseous, 30 bar')
-                            else:
-                                hydrogen_source = dict_hydrogen_acts[row['power_classification']]
-                        else:
-                            hydrogen_source = ('hydrogen production, gaseous, 30 bar, from PEM electrolysis, power from market for electricity, medium voltage', 
-                                            'hydrogen, gaseous, 30 bar')
-                        
-                        hydrogen_generator_acts = w.get_many(db_sel, 
-                                                          w.equals("name", hydrogen_source[0]),
-                                                          w.equals("reference product", hydrogen_source[1]) )
-                        
-                        possible_locations = [act['location'] for act in hydrogen_generator_acts]
-                
-                        best_matched_loc = match_best_location(iso2, possible_locations)[0] if iso2 not in possible_locations else iso2
-                        #print(hydrogen_source[0],hydrogen_source[1],best_matched_loc)
-
-                        # Needed to link to dataset from external database
-                        act_h2 = w.get_one(db_sel,
-                                        w.equals("name", hydrogen_source[0]),
-                                        w.equals("reference product", hydrogen_source[1]),
-                                        w.equals("unit", 'kilogram'),
-                                        w.equals("location", best_matched_loc) )
-
-                        exc_new = {'location': act_h2['location'],
-                                             'name': act_h2['name'],
-                                             'reference product': act_h2['reference product'],
-                                             'unit': act_h2['unit'],
-                                             'type': 'technosphere',
-                                             'amount':exc_2_copy['amount']* init_amount,#IMPORTANT: take the initital amount in the exchange
-                                             'input': (matched_database, act_h2['code'])}
-                        new_exchanges.append(exc_new)
-
-                    elif 'for electricity' in exc_2_copy['name'] and 'electricity' in exc_2_copy['product'] and exc_2_copy['unit'] == 'kilowatt hour' and row['power_classification']!='grid':
-                        if elect_type_searched == 0:
-                            # this is to avoid searching again for the same new electricity exchange if there are multiple power inputs 
-                            power_generator = dict_power_acts[row['power_classification']]
-                            power_generator_acts = w.get_many(db_sel,
-                                                            w.equals("name", power_generator[0]),
-                                                            w.equals("reference product", power_generator[1]) )
-                            
-                            possible_locations = [act['location'] for act in power_generator_acts]
-                    
-                            best_matched_loc = match_best_location(iso2, possible_locations)[0] if iso2 not in possible_locations else iso2
-                            #print(db_sel,power_generator[0],power_generator[1],best_matched_loc)
-
-                            # Needed to link to dataset from external datab)ase
-                            act_elect = w.get_one(db_sel,
-                                            w.equals("name", power_generator[0]),
-                                            w.equals("reference product", power_generator[1]),
-                                            w.equals("unit", 'kilowatt hour'),
-                                            w.equals("location", best_matched_loc) ).copy()
-
-                            elect_type_searched = 1
-
-                        exc_3=exc_2_copy.copy()
-                        
-                        # Note: we will have to provide the input as we link to external database
-                        exc_new = {'location': act_elect['location'],
-                                            'name': act_elect['name'],
-                                            'reference product': act_elect['reference product'],
-                                            'unit': act_elect['unit'],
-                                            'type': 'technosphere',
-                                            #'database': db_name,
-                                            'amount':exc_3['amount']* init_amount,#IMPORTANT: take the initital amount in the exchange
-                                            'input': (matched_database, act_elect['code'])  
-                                }
-                        new_exchanges.append(exc_new)
-
-                    else:
-                        # Needed to link to dataset from external database
-                        if 'technosphere' == exc_2_copy['type']:
-                            #print(exc_2_copy['name'],  init_amount_2, init_amount)
-                            act = w.get_one(db_sel,
-                                                        w.equals("name", exc_2_copy['name']),
-                                                        w.equals("reference product", exc_2_copy['product']),
-                                                        w.equals("unit", exc_2_copy['unit']),
-                                                        w.equals("location", exc_2_copy['location']) ).copy()
-                            
-                            exc_2_copy['input'] = (matched_database, act['code'])
-                            # Note: we will have to provide the input as we link to external database
-                            exc_2_copy['amount'] = exc_2_copy['amount'] * init_amount
-                            new_exchanges.append(exc_2_copy)
-                        if 'biosphere' == exc_2_copy['type']:
-                            act = w.get_one(bio_db_w,
-                                                        w.equals("name", exc_2_copy['name']),
-                                                        w.equals("unit", exc_2_copy['unit']),
-                                                        w.equals("categories", exc_2_copy['categories']) ).copy()
-                            exc_2_copy['input'] = (BIOSPHERE_DB, act['code'])
-                            # Note: we will have to provide the input as we link to external database
-                            exc_2_copy['amount'] = exc_2_copy['amount'] * init_amount
-                            new_exchanges.append(exc_2_copy)
-          
-            else:
-                # Needed to link to dataset from external database
-                act = w.get_one(db_sel,
-                                w.equals("name", exc['name']),
-                                w.equals("reference product", exc['product']),
-                                w.equals("unit", exc['unit']),
-                                w.equals("location", exc['location']) ).copy()
-                
-                # Note: we will have to provide the input as we link to external database
-                exc['input'] = (matched_database, act['code'])             
-                new_exchanges.append(exc)
-                
-        elif 'biosphere' == exc['type']:
-            # Needed to link to dataset from external database
-            bio_flow = w.get_one(bio_db_w,
-                                 w.equals("name", exc['name']),
-                                 w.equals("unit", exc['unit']),
-                                 w.equals("categories", exc['categories']) ).copy()
-
-            # Note: we will have to provide the input as we link to external database
-            exc['input'] = (BIOSPHERE_DB, bio_flow['code'])
-            new_exchanges.append(exc)
-
-        else:
-            raise ValueError(f"ERROR: not known exchange type {exc['type']}")
-            
-    return merge_duplicate_exchanges(new_exchanges)
-
 def merge_duplicate_exchanges(exchanges):
     """
     Aggregates exchanges by summing the 'amount' for entries with the same 'input' key.
@@ -763,4 +446,373 @@ def merge_duplicate_exchanges(exchanges):
     merged_exchanges = [ex for ex in merged_exchanges if ex['amount'] != 0]
 
     return merged_exchanges
+
+def process_exchanges(
+    activity_to_adapt,
+    row,
+    matched_database,
+    db_name,
+    iso2,
+    db_sel,
+    new_code,
+    bio_db_w,
+    plant_type,
+    dict_power_acts=dict_power_acts,
+    dict_hydrogen_acts=dict_hydrogen_acts,
+):
+    """
+    Faster drop-in replacement for process_exchanges.
+
+    Main speedups:
+    - Cache repeated get_one/get_many calls
+    - Resolve electricity/hydrogen source once per plant
+    - Reuse cached matching logic across nested branches
+    """
+
+    # --------------------------------------------------
+    # Local caches
+    # --------------------------------------------------
+    get_many_cache = {}
+    tech_exact_cache = {}
+    tech_best_cache = {}
+    bio_cache = {}
+
+    # --------------------------------------------------
+    # Small helpers
+    # --------------------------------------------------
+    def _safe_tuple(x):
+        if isinstance(x, tuple):
+            return x
+        if isinstance(x, list):
+            return tuple(x)
+        return x
+
+    def get_many_cached(name, ref_product):
+        key = (name, ref_product)
+        if key not in get_many_cache:
+            get_many_cache[key] = list(
+                w.get_many(
+                    db_sel,
+                    w.equals("name", name),
+                    w.equals("reference product", ref_product),
+                )
+            )
+        return get_many_cache[key]
+
+    def get_tech_exact(name, ref_product, unit, location):
+        key = (name, ref_product, unit, location)
+        if key not in tech_exact_cache:
+            tech_exact_cache[key] = w.get_one(
+                db_sel,
+                w.equals("name", name),
+                w.equals("reference product", ref_product),
+                w.equals("unit", unit),
+                w.equals("location", location),
+            ).copy()
+        return tech_exact_cache[key]
+
+    def get_tech_best(name, ref_product, unit, target_iso2):
+        """
+        Find best-matching location once and cache it.
+        """
+        key = (name, ref_product, unit, target_iso2)
+        if key in tech_best_cache:
+            return tech_best_cache[key]
+
+        acts = get_many_cached(name, ref_product)
+        if not acts:
+            raise LookupError(f"No activity found for {(name, ref_product)}")
+
+        possible_locations = [act["location"] for act in acts]
+        best_loc = target_iso2 if target_iso2 in possible_locations else match_best_location(target_iso2, possible_locations)[0]
+
+        act = get_tech_exact(name, ref_product, unit, best_loc)
+        tech_best_cache[key] = act
+        return act
+
+    def get_bio_flow(name, unit, categories):
+        categories = _safe_tuple(categories)
+        key = (name, unit, categories)
+        if key not in bio_cache:
+            bio_cache[key] = w.get_one(
+                bio_db_w,
+                w.equals("name", name),
+                w.equals("unit", unit),
+                w.equals("categories", categories),
+            ).copy()
+        return bio_cache[key]
+
+    def is_electricity_exc(exc):
+        return (
+            exc.get("type") == "technosphere"
+            and "for electricity" in str(exc.get("name", ""))
+            and "electricity" in str(exc.get("product", ""))
+            and exc.get("unit") == "kilowatt hour"
+        )
+
+    def is_grid_market_exc(exc):
+        return (
+            exc.get("type") == "technosphere"
+            and "market group for electricity, " in str(exc.get("name", ""))
+            and exc.get("unit") == "kilowatt hour"
+            and row["power_classification"] == "grid"
+            and iso2 not in ["BR", "IN", "US", "CN", "CA", "UG"]
+        )
+
+    def is_hydrogen_exc(exc):
+        return (
+            exc.get("type") == "technosphere"
+            and "hydrogen, gaseous" in str(exc.get("product", ""))
+        )
+
+    def is_local_iron_exc(exc):
+        name = str(exc.get("name", ""))
+        product = str(exc.get("product", ""))
+        return (
+            plant_type != "steel"
+            and exc.get("type") == "technosphere"
+            and "iron" in product
+            and ("iron production" in name or "market for pig iron" in name)
+            and not any(word in name for word in ["treatment", "sludge", "ash", "residues", "waste"])
+        )
+
+    def make_technosphere_exchange(act, amount):
+        return {
+            "location": act["location"],
+            "name": act["name"],
+            "reference product": act["reference product"],
+            "unit": act["unit"],
+            "type": "technosphere",
+            "amount": amount,
+            "input": (matched_database, act["code"]),
+        }
+
+    def make_biosphere_exchange(exc, amount):
+        bio_flow = get_bio_flow(exc["name"], exc["unit"], exc["categories"])
+        exc_new = exc.copy()
+        exc_new["amount"] = amount
+        exc_new["input"] = (BIOSPHERE_DB, bio_flow["code"])
+        return exc_new
+
+    # --------------------------------------------------
+    # Resolve plant-level electricity / hydrogen once
+    # --------------------------------------------------
+    power_classification = row["power_classification"]
+
+    act_elect = None
+    if power_classification != "grid":
+        power_generator = dict_power_acts[power_classification]
+        act_elect = get_tech_best(
+            name=power_generator[0],
+            ref_product=power_generator[1],
+            unit="kilowatt hour",
+            target_iso2=iso2,
+        )
+
+    if power_classification != "grid":
+        if power_classification in {"renewable", "pv"}:
+            cf_rounded = get_mean_cf_pv_from_iso2(iso2)
+            hydrogen_source = (
+                f"hydrogen production, gaseous, 30 bar, from PEM electrolysis, solar PV ground-mounted, global cf [{cf_rounded}]",
+                "hydrogen, gaseous, 30 bar",
+            )
+        else:
+            hydrogen_source = dict_hydrogen_acts[power_classification]
+    else:
+        hydrogen_source = (
+            "hydrogen production, gaseous, 30 bar, from PEM electrolysis, power from market for electricity, medium voltage",
+            "hydrogen, gaseous, 30 bar",
+        )
+
+    act_h2 = get_tech_best(
+        name=hydrogen_source[0],
+        ref_product=hydrogen_source[1],
+        unit="kilogram",
+        target_iso2=iso2,
+    )
+
+    # --------------------------------------------------
+    # Nested processors for iron / preheating branches
+    # --------------------------------------------------
+    def process_preheating_activity(act_hydrogen_preheat, init_amount,act_h2, act_elect):
+        out = []
+
+        act_hydrogen_preheat = get_tech_exact(
+                    act_hydrogen_preheat["name"],
+                    act_hydrogen_preheat["product"],
+                    act_hydrogen_preheat["unit"],
+                    act_hydrogen_preheat["location"],
+                )
+
+        for exc_3 in act_hydrogen_preheat["exchanges"]:
+            exc_3_copy = exc_3.copy()
+            scaled_amount = exc_3_copy["amount"] * init_amount
+
+            if is_hydrogen_exc(exc_3_copy):
+                out.append(make_technosphere_exchange(act_h2, scaled_amount))
+
+            elif is_electricity_exc(exc_3_copy) and power_classification != "grid":
+                out.append(make_technosphere_exchange(act_elect, scaled_amount))
+
+            elif exc_3_copy["type"] == "technosphere":
+                act = get_tech_exact(
+                    exc_3_copy["name"],
+                    exc_3_copy["product"],
+                    exc_3_copy["unit"],
+                    exc_3_copy["location"],
+                )
+                exc_3_copy["input"] = (matched_database, act["code"])
+                exc_3_copy["amount"] = scaled_amount
+                out.append(exc_3_copy)
+
+            elif exc_3_copy["type"] == "biosphere":
+                out.append(make_biosphere_exchange(exc_3_copy, scaled_amount))
+
+        return out
+
+    def process_local_iron_activity(exc):
+        out = []
+
+        exc_local = exc.copy()
+        if exc_local["name"] == "market for pig iron":
+            exc_local["name"] = "pig iron production"
+
+        init_amount = exc_local["amount"]
+
+        act_iron_init = get_tech_exact(
+            exc_local["name"],
+            exc_local["product"],
+            exc_local["unit"],
+            exc_local["location"],
+        )
+
+        act_iron = act_iron_init.copy()
+        act_iron["location"] = iso2
+        act_iron = relink_technosphere_exchanges(act_iron, db_sel, contained=False)
+
+        for exc_2 in act_iron["exchanges"]:
+            exc_2_copy = exc_2.copy()
+            scaled_amount = exc_2_copy["amount"] * init_amount
+
+            if is_hydrogen_exc(exc_2_copy):
+                out.append(make_technosphere_exchange(act_h2, scaled_amount))
+
+            elif "hydrogen, hot" == str(exc_2_copy.get("product", "")):
+                act_hydrogen_preheat = exc_2_copy.copy()
+                out.extend(process_preheating_activity(act_hydrogen_preheat, scaled_amount,act_h2,act_elect))
+
+            elif is_electricity_exc(exc_2_copy) and power_classification != "grid":
+                out.append(make_technosphere_exchange(act_elect, scaled_amount))
+
+            elif exc_2_copy["type"] == "technosphere":
+                act = get_tech_exact(
+                    exc_2_copy["name"],
+                    exc_2_copy["product"],
+                    exc_2_copy["unit"],
+                    exc_2_copy["location"],
+                )
+                exc_2_copy["input"] = (matched_database, act["code"])
+                exc_2_copy["amount"] = scaled_amount
+                out.append(exc_2_copy)
+
+            elif exc_2_copy["type"] == "biosphere":
+                out.append(make_biosphere_exchange(exc_2_copy, scaled_amount))
+
+        return out
+
+    # --------------------------------------------------
+    # Main loop
+    # --------------------------------------------------
+    new_exchanges = []
+
+    for exc in activity_to_adapt["exchanges"]:
+        exc_type = exc["type"]
+
+        if exc_type == "production":
+            new_exchanges.append(
+                {
+                    "location": exc["location"],
+                    "database": db_name,
+                    "name": exc["name"],
+                    "reference product": exc["product"],
+                    "unit": exc["unit"],
+                    "type": "production",
+                    "amount": exc["amount"],
+                    "input": (db_name, new_code),
+                    "output": (db_name, new_code),
+                }
+            )
+
+        elif exc_type == "technosphere":
+            # 1) Replace non-grid electricity
+            if is_electricity_exc(exc) and power_classification != "grid":
+                new_exchanges.append(make_technosphere_exchange(act_elect, exc["amount"]))
+
+            # 2) Regionalize grid electricity markets
+            elif is_grid_market_exc(exc):
+                exc_new = exc.copy()
+                init_name = exc_new["name"]
+                voltage_level = exc_new["name"].split("market group for electricity, ")[-1]
+                target_name = f"market for electricity, {voltage_level}"
+
+                try:
+                    act = get_tech_exact(
+                        target_name,
+                        exc_new["product"],
+                        exc_new["unit"],
+                        iso2,
+                    )
+                    exc_new["name"] = target_name
+                    exc_new["location"] = iso2
+                except Exception:
+                    acts_init = get_many_cached(target_name, exc_new["product"])
+                    possible_locations = [act_["location"] for act_ in acts_init]
+                    best_matched_loc = iso2 if iso2 in possible_locations else match_best_location(iso2, possible_locations)[0]
+
+                    if best_matched_loc == "GLO":
+                        print(f"Global dataset used for combi: {(target_name, exc_new['product'], iso2, best_matched_loc, possible_locations)}")
+                        target_name = init_name
+
+                    act = get_tech_exact(
+                        target_name,
+                        exc_new["product"],
+                        exc_new["unit"],
+                        best_matched_loc,
+                    )
+                    exc_new["name"] = target_name
+                    exc_new["location"] = best_matched_loc
+
+                exc_new["input"] = (matched_database, act["code"])
+                new_exchanges.append(exc_new)
+
+            # 3) Replace hydrogen
+            elif is_hydrogen_exc(exc):
+                new_exchanges.append(make_technosphere_exchange(act_h2, exc["amount"]))
+
+            # 4) Special local iron production branch
+            elif is_local_iron_exc(exc):
+                new_exchanges.extend(process_local_iron_activity(exc))
+
+            # 5) Generic technosphere relink
+            else:
+                exc_new = exc.copy()
+                act = get_tech_exact(
+                    exc_new["name"],
+                    exc_new["product"],
+                    exc_new["unit"],
+                    exc_new["location"],
+                )
+                exc_new["input"] = (matched_database, act["code"])
+                new_exchanges.append(exc_new)
+
+        elif exc_type == "biosphere":
+            exc_new = exc.copy()
+            bio_flow = get_bio_flow(exc_new["name"], exc_new["unit"], exc_new["categories"])
+            exc_new["input"] = (BIOSPHERE_DB, bio_flow["code"])
+            new_exchanges.append(exc_new)
+
+        else:
+            raise ValueError(f"ERROR: not known exchange type {exc_type}")
+
+    return merge_duplicate_exchanges(new_exchanges)
  

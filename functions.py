@@ -2,15 +2,14 @@ from config import *
 import pandas as pd
 import numpy as np
 import uuid
-import pycountry
-import pycountry_convert as pc
-import copy
+import pycountry_convert as pc_convert
+import pycountry as pc
 import rioxarray as ri
-import brightway2 as bw
 import time
 from collections import defaultdict
 import io
 import bw2data as bd
+import bw2calc as bc
 from contextlib import redirect_stdout
 from rapidfuzz import process, fuzz
 import wurst as w
@@ -22,7 +21,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, An
 import pandas as pd
 from tqdm import tqdm
 
-from mapping import CO2_emission_factor_hydrogen, CO2_emission_factor_precursors_kgCO2_kg, CBAM_RELEVANT_PRECURSORS_IRON, CBAM_RELEVANT_PRECURSORS_STEEL, SCOPE_2_EXCHANGES
+from mapping import CBAM_RELEVANT_PRECURSORS_IRON, CBAM_RELEVANT_PRECURSORS_STEEL, SCOPE_2_EXCHANGES
 
 # Standard VARS
 EN_H2 = 120 #MJ/kg h2
@@ -44,7 +43,7 @@ FUZZY_THRESHOLD_SCOPE_2 = 90
 
 def convert_iso3_to_iso2(iso3):
     try:
-        country = pycountry.countries.get(alpha_3=iso3)
+        country = pc.countries.get(alpha_3=iso3)
         return country.alpha_2
     except KeyError:
         return None
@@ -53,7 +52,7 @@ def country_to_iso2(country_name):
     if country_name in custom_mappings:
         return custom_mappings[country_name]
     try:
-        return pycountry.countries.lookup(country_name).alpha_2
+        return pc.countries.lookup(country_name).alpha_2
     except LookupError:
         return None  # Handle missing cases gracefully
 
@@ -98,7 +97,7 @@ def should_do_contri(method: Tuple, contri: bool) -> bool:
     return contri and ("climate change" in str(method))
 
 
-def compute_contribution_array(act_sel, lca: bw.LCA) -> List[Tuple[Any, ...]]:
+def compute_contribution_array(act_sel, lca: bc.LCA) -> List[Tuple[Any, ...]]:
     """
     Returns list of tuples: (exc_name, impact_value, scope, cbam, amount)
     - Technosphere: redo LCIA for exc.input with exc['amount']
@@ -109,7 +108,7 @@ def compute_contribution_array(act_sel, lca: bw.LCA) -> List[Tuple[Any, ...]]:
         exc_type = exc.get("type")
 
         if exc_type == "technosphere":
-            lca.redo_lcia({exc.input: exc["amount"]})
+            lca.lcia(demand={exc.input.id: exc["amount"]})
             result_array.append((
                 exc.get("name"),
                 lca.score,
@@ -121,7 +120,10 @@ def compute_contribution_array(act_sel, lca: bw.LCA) -> List[Tuple[Any, ...]]:
         elif exc_type == "biosphere":
             # Multiply amount by its CF (as in your code)
             # Note: this assumes the current lca.method is the climate change method.
-            cf = lca.characterization_matrix[lca.biosphere_dict[exc.input], :].sum()
+            cf = lca.characterization_matrix[
+                            lca.biosphere_dict[exc.input.id], :
+                        ].sum()
+            
             result_array.append((
                 exc.get("name"),
                 float(cf) * exc.get("amount", 0.0),
@@ -131,34 +133,57 @@ def compute_contribution_array(act_sel, lca: bw.LCA) -> List[Tuple[Any, ...]]:
             ))
     return result_array
 
+def build_reusable_lca(
+    first_act,
+    first_method: Tuple,
+) -> bc.LCA:
+    """
+    Build one LCA object once, including technosphere/biosphere + first LCIA method.
+    This object can then be reused with redo_lci / switch_method / redo_lcia.
+    """
+    lca = bc.LCA({first_act: 1}, method=first_method)
+    lca.lci()
+    lca.lcia()
+    return lca
+
 
 def compute_lca_for_activity(
     act_sel,
+    lca: bc.LCA,
     methods: Sequence[Tuple],
     contri: bool = True,
 ) -> Dict[str, Any]:
     """
-    Computes LCA scores for one activity across all methods.
-    Reuses the same LCA object, switching methods between runs.
+    Compute all LCIA scores for one activity while reusing a prebuilt LCA object.
+
+    Important:
+    - We assume all activities are in the same database system / project context.
+    - The technosphere and biosphere matrices stay the same.
+    - Only the demand and characterization method are changed.
     """
     lca_scores: Dict[str, Any] = {}
     lca_scores_contri: Dict[str, Any] = {}
 
-    lca = None
+    demand = {act_sel.id: 1}
+
+    # Recompute inventory for the new demand once
+    lca.redo_lci(demand)
+
     for j, method in enumerate(methods):
         if j == 0:
-            lca = bw.LCA({act_sel: 1}, method=method)
-            lca.lci()
-            lca.lcia()
-        else:
-            # switch method and redo LCIA
+            # If the LCA object was already initialized with methods[0],
+            # just redo LCIA for the current demand.
             lca.switch_method(method)
-            lca.redo_lcia({act_sel: 1})
+            lca.redo_lcia(demand)
+        else:
+            lca.switch_method(method)
+            lca.redo_lcia(demand)
 
-        lca_scores[f"lca_impact_{method[1]}"] = lca.score
+        method_name = method[1]
+        lca_scores[f"lca_impact_{method_name}"] = lca.score
 
         if should_do_contri(method, contri):
-            lca_scores_contri[f"lca_impact_contri_{method[1]}"] = compute_contribution_array(act_sel, lca)
+            lca_scores_contri[f"lca_impact_contri_{method_name}"] = compute_contribution_array(act_sel, lca)
 
     out = {}
     out.update(lca_scores)
@@ -184,13 +209,8 @@ def postprocess_results_df(
     df["region"] = df["location"].apply(lambda x: "European" if x in eu_set else "Non-European")
 
     # emissions totals
-    if "lca_impact_climate change" in df.columns:
-        df["Plant_GHG_emissions_Mt"] = df["production volume"] * df["lca_impact_climate change"]
-
-    # climate change without transport (if available)
-    if sum_exchanges_wo_transport is not None and "lca_impact_contri_climate change" in df.columns:
-        df["lca_impact_climate change_wo_transport"] = df["lca_impact_contri_climate change"].apply(sum_exchanges_wo_transport)
-        df["Plant_GHG_emissions_Mt_wo_transport"] = df["production volume"] * df["lca_impact_climate change_wo_transport"]
+    if NAME_CC_COL in df.columns:
+        df["Plant_GHG_emissions_Mt"] = df["production volume"] * df[NAME_CC_COL]
 
     # commodity type mapping
     if "initial name" in df.columns:
@@ -198,7 +218,7 @@ def postprocess_results_df(
 
     # exclude iron making
     if exclude_iron and "initial name" in df.columns:
-        df = df[~df["initial name"].str.contains("iron", case=False, na=False)]
+        df = df[~df["initial name"].str.contains("iron production", case=False, na=False)]
 
     # sort
     if "Plant_GHG_emissions_Mt" in df.columns:
@@ -210,74 +230,36 @@ def postprocess_results_df(
 # -------------------------
 # Main modular function
 # -------------------------
-
 def calc_lca_impacts_all_plants(
     steel_method: str,
     db_name_base: str,
-    methods: Sequence[Tuple],
+    methods,
     *,
     results_dir: str = "results",
     calc_lca_impacts: bool = True,
     contri: bool = True,
     start_idx: int = 0,
-    european_countries: Iterable[str] = (),
-    dict_types: Dict[str, Any] = None,
-    sum_exchanges_wo_transport: Optional[Callable[[Any], float]] = None,
+    european_countries=(),
+    dict_types=None,
     exclude_iron: bool = True,
     save_pickle: bool = True,
-    tqdm_desc: Optional[str] = "Calculating LCA impacts",
-    time_tag = '',
-    db_tag: str = '',
-) -> pd.DataFrame:
-    """
-    Modular version of your workflow.
-
-    Parameters
-    ----------
-    steel_method : str
-        Suffix identifying the steel production method, e.g. "ew", "bf_bof", ...
-    db_name_base : str
-        Base db name without suffix. Final DB name becomes f"{db_name_base}_{steel_method}".
-    methods : Sequence[Tuple]
-        Brightway LCIA methods (tuples), e.g. MY_METHODS.
-    results_dir : str
-        Directory to store pickles.
-    calc_lca_impacts : bool
-        If True: compute and save. If False: load from pickle.
-    contri : bool
-        If True: compute contribution arrays for climate change methods.
-    start_idx : int
-        Resume index (skip activities with i < start_idx).
-    european_countries : iterable
-        Used to classify 'region'.
-    dict_types : dict
-        Mapping from initial name -> commodity type.
-    sum_exchanges_wo_transport : callable
-        Function applied to contribution arrays to exclude transport.
-    exclude_iron : bool
-        Whether to remove plants whose initial name contains 'iron'.
-    save_pickle : bool
-        Save computed results to pickle if calc_lca_impacts is True.
-    tqdm_desc : str
-        Description for tqdm progress bar.
-
-    Returns
-    -------
-    pd.DataFrame
-    """
+    tqdm_desc: str | None = "Calculating LCA impacts",
+    time_tag: str = "",
+    db_tag: str = "",
+):
     if dict_types is None:
         dict_types = {}
-    
-    time_tag = "_future" if time_tag == 'future' else '' 
-    db_tag = f"_{db_tag}" if len(db_tag) > 0 else '' 
+
+    time_tag = "_future" if time_tag == "future" else ""
+    db_tag = f"_{db_tag}" if len(db_tag) > 0 else ""
 
     db_name = (
         f"{db_name_base}{time_tag}_{steel_method}{db_tag}"
         if steel_method
         else f"{db_name_base}{time_tag}{db_tag}"
     )
-    
-    os.makedirs(results_dir, exist_ok=True)
+
+    acts = list(bd.Database(db_name))
 
     file_path = (
         os.path.join(results_dir, f"results_df{time_tag}_{steel_method}{db_tag}.pkl")
@@ -285,31 +267,45 @@ def calc_lca_impacts_all_plants(
         else os.path.join(results_dir, f"results_df{time_tag}{db_tag}.pkl")
     )
 
-
     if not calc_lca_impacts:
         with open(file_path, "rb") as f:
             df = pickle.load(f)
+
         return postprocess_results_df(
             df,
             european_countries=european_countries,
             dict_types=dict_types,
-            sum_exchanges_wo_transport=sum_exchanges_wo_transport,
             exclude_iron=exclude_iron,
         )
 
-    # compute
-    columns = build_results_columns(methods)
-    results_df = pd.DataFrame(columns=columns)
+    if not acts:
+        raise ValueError(f"No activities found in database '{db_name}'")
 
-    acts = list(bw.Database(db_name))
+    if not methods:
+        raise ValueError("No LCIA methods provided")
+
+    os.makedirs(results_dir, exist_ok=True)
+
+    # Build one reusable LCA object once
+    first_valid_idx = max(0, start_idx)
+    if first_valid_idx >= len(acts):
+        raise ValueError(f"start_idx={start_idx} is beyond number of activities ({len(acts)})")
+
+    lca = build_reusable_lca(acts[first_valid_idx], methods[0])
+
+    rows = []
+
     iterator = enumerate(tqdm(acts, desc=tqdm_desc or f"LCA {db_name}"))
-
     for i, act_sel in iterator:
         if i < start_idx:
             continue
 
-        # compute scores for this activity
-        scores = compute_lca_for_activity(act_sel, methods=methods, contri=contri)
+        scores = compute_lca_for_activity(
+            act_sel,
+            lca=lca,
+            methods=methods,
+            contri=contri,
+        )
 
         name = act_sel.get("name")
         comment = act_sel.get("comment", "")
@@ -330,67 +326,35 @@ def calc_lca_impacts_all_plants(
             "power_source": parse_comment_field(comment, "power source"),
         }
         row.update(scores)
+        rows.append(row)
 
-        results_df = pd.concat([results_df, pd.DataFrame([row])], ignore_index=True)
+    results_df = pd.DataFrame(rows)
 
     if save_pickle:
         results_df.to_pickle(file_path)
 
-    # postprocess
     return postprocess_results_df(
         results_df,
         european_countries=european_countries,
         dict_types=dict_types,
-        sum_exchanges_wo_transport=sum_exchanges_wo_transport,
         exclude_iron=exclude_iron,
     )
-
 
 # Function to convert country name to continent name
 def get_continent(country_name):
     try:
         # Get the ISO alpha-2 code (e.g., 'US' for United States)
-        country = pycountry.countries.lookup(country_name)
+        country = pc.countries.lookup(country_name)
         country_code = country.alpha_2
 
         # Convert to continent code
-        continent_code = pc.country_alpha2_to_continent_code(country_code)
+        continent_code = pc_convert.country_alpha2_to_continent_code(country_code)
 
         # Convert continent code to full name
-        continent_name = pc.convert_continent_code_to_continent_name(continent_code)
+        continent_name = pc_convert.convert_continent_code_to_continent_name(continent_code)
         return continent_name
     except:
         return 'Unknown'
-    
-def sum_exchanges_wo_transport(data, exclude_names=[
-                                    "market for transport, freight, sea, container ship",
-                                    "market group for transport, freight train"
-                                ]):
-    """
-    Sum the second element (index 1) of each tuple in a dataset, excluding entries 
-    where the exchange name matches any in the provided list of excluded names.
-
-    Parameters:
-    ----------
-    data : list of tuples
-        A list where each item is a tuple. The first element (index 0) is assumed to be
-        the exchange name (a string), and the second element (index 1) is a numeric value to be summed.
-        
-    exclude_names : list of str, optional
-        A list of exchange names to exclude from the summation. By default, this excludes
-        common transport-related markets.
-
-    Returns:
-    -------
-    float
-        The sum of the second-place values in the tuples, excluding any tuples where
-        the exchange name matches an item in `exclude_names`.
-    """
-    return sum(
-        item[1]
-        for item in data
-        if item[0] not in exclude_names
-    )
 
 def silent_search(db_name, name_search, desired_location):
     """
@@ -406,7 +370,7 @@ def silent_search(db_name, name_search, desired_location):
     """
     f = io.StringIO()
     with redirect_stdout(f):
-        results = list(bw.Database(db_name).search(
+        results = list(bd.Database(db_name).search(
             name_search,
             limit=1000,
             filter={"location": desired_location}
@@ -443,7 +407,7 @@ def sum_electricity_and_hydrogen_from_db(
     electricity_kWh = 0.0
     hydrogen_kg = 0.0
 
-    for act in list(bw.Database(db_name)):
+    for act in list(bd.Database(db_name)):
         #print(act['name'])
 
         # ---------------------------
@@ -455,8 +419,9 @@ def sum_electricity_and_hydrogen_from_db(
                 exc.get("type") == "technosphere" and
                 "kilogram" in str(exc.get("unit", "")).lower()
                 and (
-                    "hydrogen, gaseous" in str(exc.get("reference product", "")).lower()
-                    or "hydrogen, gaseous" in str(exc.get("product", "")).lower()
+                    "hydrogen" in str(exc.get("reference product", "")).lower()
+                    or "hydrogen" in str(exc.get("product", "")).lower() and
+                    'kilogram' == str(exc.get("unit", "")).lower()
                 )
             ):
                 amount = exc.get("amount", 0.0)
@@ -645,7 +610,7 @@ def sum_cbam_contributions(data, alpha, exc_ccs=True, exclude_scope_2=False):
     
     return {'cbam_true': cbam_sums['cbam_true'], 'cbam_false': cbam_sums['cbam_false']}
 
-def get_best_match(name, choices=CO2_emission_factor_precursors_kgCO2_kg):
+def get_best_match(name, choices):
     """
     Return the best fuzzy match for a name from the CBAM precursor list using RapidFuzz.
     
@@ -668,95 +633,6 @@ def get_best_match(name, choices=CO2_emission_factor_precursors_kgCO2_kg):
         scorer=fuzz.token_set_ratio
     )
     return match  # e.g., ('steel', 67.5, ...)
-
-def sum_cbam_contributions_emission_factor(data, alpha, log_path='logs\cbam_emission_factor_scope3_corrections.log', exc_ccs=True):
-    """
-    Calculates the sum of life cycle assessment (LCA) impact values,
-    separating CBAM-relevant and non-CBAM contributions, with emission factor adjustments for scope 3 precursors.
-
-    Parameters
-    ----------
-    data : list of tuples
-        Each tuple contains:
-        - name (str): Identifier for the contribution.
-        - value (float or np.float64): LCA impact value.
-        - scope (int): Scope level (used for CBAM filtering).
-        - is_cbam (bool): Whether the contribution is CBAM-relevant.
-        - exc_amount (float): Quantity of the exchanged amount.
-
-    log_path : str, optional
-        File path for logging corrections. Default is 'cbam_corrections.log'.
-
-    Returns
-    -------
-    dict
-        Dictionary with the summed LCA impact values:
-        - 'cbam_true_efactor': Total CBAM-relevant impact.
-        - 'cbam_false_efactor': Total non-CBAM impact.
-    """
-    cbam_sums = defaultdict(float)
-
-    with open(log_path, 'a') as log_file:
-        for name, value, scope, is_cbam, exc_amount in data:
-            if not isinstance(value, (float, np.float64)):
-                continue  # Skip non-numeric values
-
-            # This is an exception, if CBAM is previously indicated as False, but the impact is negative, for example, due to CCS, \
-            # we account for it is as true, as such, direct emissions that should be substracted, note we would also get very strange results...
-            # Better would be substract CO2 stored from direct emisions in scope 1 (in original inventories), but the activities for CCS are built in a different way.
-            if exc_ccs:
-                if not is_cbam and value<0 and scope == 3 and any(sub in name.lower() for sub in ['ccs', 'capture']):
-                    cbam_sums['cbam_true'] += value
-                    continue
-                
-            #normal procedure:
-            if is_cbam and scope == 3:
-                match = get_best_match(name)
-
-                if match[0] != 'hydrogen':
-                    impact_factor = CO2_emission_factor_precursors_kgCO2_kg.get(match[0])
-                else:
-                    match = get_best_match(name, choices=CO2_emission_factor_hydrogen)
-                    ghg_smr = CO2_emission_factor_hydrogen.get('steam methane reforming')
-                    calculated_lca_factor = (value / exc_amount)
-
-                    if calculated_lca_factor < 4.4: #emission low-carbon hydrogen threshold Certifhy
-                        impact_factor = 0
-                    else:
-                        impact_factor = ghg_smr
-                    print(name, match, calculated_lca_factor,impact_factor)
-
-                calculated_value = exc_amount * impact_factor
-
-                if value - calculated_value < 0:
-                    # Log the correction
-                    corrected_factor_lca_based = alpha * (value / exc_amount)
-                    corrected_value = exc_amount * corrected_factor_lca_based
-                    cbam_sums['cbam_true'] += corrected_value
-                    cbam_sums['cbam_false'] += value - corrected_value
-
-                    log_file.write(
-                        f"Correction applied:\n"
-                        f"- Name: {name}\n"
-                        f"- Match: {match[0]}\n"
-                        f"- Original value: {value}\n"
-                        f"- EF-derived value: {calculated_value}\n"
-                        f"- Corrected value: {corrected_value}\n"
-                        f"- LCA factor: {corrected_factor_lca_based}\n"
-                        f"- EF factor used: {impact_factor}\n"
-                        f"---\n"
-                    )
-                else:
-                    cbam_sums['cbam_true'] += calculated_value
-                    cbam_sums['cbam_false'] += value - calculated_value
-            else:
-                key = 'cbam_true' if is_cbam else 'cbam_false'
-                cbam_sums[key] += value
-
-    return {
-        'cbam_true_efactor': cbam_sums['cbam_true'],
-        'cbam_false_efactor': cbam_sums['cbam_false']
-    }
 
 def find_activity_fast(db_name, name_search, desired_ref_product, desired_location):
     """
@@ -812,7 +688,7 @@ def search_biosphere_entries(database, name, category, unit):
     Returns:
     list of dict: A list of biosphere entries that match the specified criteria.
     """
-    matching_activities = [bio for bio in bw.Database(database)
+    matching_activities = [bio for bio in bd.Database(database)
             if bio['name'] == name and 
                bio['categories'] == category and 
                bio['unit'] == unit]
@@ -860,7 +736,7 @@ def try_find_bw_act(database_name, activity_name, ref_product, location):
                     #print(f"WARNING: '{activity_name}' [{location}] not found, sourced electricity from 'market group for electricity' [{loc}] instead.")
                 # Filter activities matching the given criteria
                 matching_activities = [
-                    act for act in bw.Database(database_name)
+                    act for act in bd.Database(database_name)
                     if activity_name_l == act['name'] and loc == act['location']
                     and ref_product == act['reference product']
                 ]
@@ -874,7 +750,7 @@ def try_find_bw_act(database_name, activity_name, ref_product, location):
         else:   
             # Filter activities matching the given criteria
             matching_activities = [
-                act for act in bw.Database(database_name)
+                act for act in bd.Database(database_name)
                 if activity_name == act['name'] and loc == act['location']
                 and ref_product == act['reference product']
             ]
@@ -920,7 +796,7 @@ def find_bw_act(database_name, activity_name, ref_product, location):
     """
     # Filter activities matching the given criteria
     matching_activities = [
-        act for act in bw.Database(database_name) 
+        act for act in bd.Database(database_name) 
         if activity_name == act['name'] and location == act['location']
         and ref_product == act['reference product']
     ]
@@ -958,7 +834,7 @@ def annotate_exchanges_with_cbam(db_name, define_scope_cbam_func, cbam_precursor
     Returns:
     None [modified database with annotations of scope and cbam included]
     """
-    acts = list(bw.Database(db_name))
+    acts = list(bd.Database(db_name))
     start_time = time.time()
 
     for i, act in enumerate(acts):
@@ -1127,7 +1003,7 @@ def round_to_nearest(number, step=0.05, max_value=None):
 
 def iso2_to_country(iso2_code):
     try:
-        return pycountry.countries.get(alpha_2=iso2_code).name.replace(
+        return pc.countries.get(alpha_2=iso2_code).name.replace(
             'Taiwan, Province of China', "Taiwan").replace(
             'Iran, Islamic Republic of', "Iran").replace(
             'Korea, Republic of', "South-Korea")
@@ -1226,7 +1102,7 @@ def GENERATE_ACTS_GM_PV(db_ei, cf_pv, curtailment_pv, cf_electrolyzer=0.3, elect
     kg_water_unit= 2871.8 * 20 #20 L per m2 module, 2871.8 square meter for open ground construction, on ground, Mont Soleil
 
     new_name = "hydrogen production, gaseous, {} bar, from {} electrolysis, solar PV ground-mounted, global cf [{}]".format(BAR_ACT[electrolyzer],electrolyzer.upper(), round(cf_pv,3))
-    check_act = [act for act in bw.Database(db_ei) if new_name == act['name']]
+    check_act = [act for act in bd.Database(db_ei) if new_name == act['name']]
     
     tech = "solar_pv_gm"
     
@@ -1240,7 +1116,7 @@ def GENERATE_ACTS_GM_PV(db_ei, cf_pv, curtailment_pv, cf_electrolyzer=0.3, elect
     if len(check_act) > 0:
         print("Skipped: activity '{}' already generated!".format(new_name))
     else:
-        db = bw.Database(db_ei)
+        db = bd.Database(db_ei)
         code_na = str(uuid.uuid4().hex)
         act = db.new_activity(
             **{
@@ -1276,7 +1152,7 @@ def GENERATE_ACTS_GM_PV(db_ei, cf_pv, curtailment_pv, cf_electrolyzer=0.3, elect
             act.new_exchange(amount= amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
             
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell stack, 1MWe, PEM', 'used fuel cell stack, 1MWe, PEM', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer stack, 1MWe, PEM', 'used electrolyzer stack, 1MWe, PEM', 'RER')
 
             act.new_exchange(amount= -amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1289,7 +1165,7 @@ def GENERATE_ACTS_GM_PV(db_ei, cf_pv, curtailment_pv, cf_electrolyzer=0.3, elect
             act.new_exchange(amount=amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
             
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell balance of plant, 1MWe, PEM', 'used fuel cell balance of plant, 1MWe, PEM', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer balance of plant, 1MWe, PEM', 'used electrolyzer balance of plant, 1MWe, PEM', 'RER')
 
             act.new_exchange(amount= -amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1302,7 +1178,7 @@ def GENERATE_ACTS_GM_PV(db_ei, cf_pv, curtailment_pv, cf_electrolyzer=0.3, elect
             act.new_exchange(amount= amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell stack, 1MWe, AEC', 'used fuel cell stack, 1MWe, AEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer stack, 1MWe, AEC', 'used electrolyzer stack, 1MWe, AEC', 'RER')
 
             act.new_exchange(amount= -amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1315,7 +1191,7 @@ def GENERATE_ACTS_GM_PV(db_ei, cf_pv, curtailment_pv, cf_electrolyzer=0.3, elect
             act.new_exchange(amount=amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell balance of plant, 1MWe, AEC', 'used fuel cell balance of plant, 1MWe, AEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer balance of plant, 1MWe, AEC', 'used electrolyzer balance of plant, 1MWe, AEC', 'RER')
 
             act.new_exchange(amount= -amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1334,7 +1210,7 @@ def GENERATE_ACTS_GM_PV(db_ei, cf_pv, curtailment_pv, cf_electrolyzer=0.3, elect
             act.new_exchange(amount= amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell stack, 1MWe, SOEC', 'used fuel cell stack, 1MWe, SOEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer stack, 1MWe, SOEC', 'used electrolyzer stack, 1MWe, SOEC', 'RER')
 
             act.new_exchange(amount= -amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1347,7 +1223,7 @@ def GENERATE_ACTS_GM_PV(db_ei, cf_pv, curtailment_pv, cf_electrolyzer=0.3, elect
             act.new_exchange(amount=amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell balance of plant, 1MWe, SOEC', 'used fuel cell balance of plant, 1MWe, SOEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer balance of plant, 1MWe, SOEC', 'used electrolyzer balance of plant, 1MWe, SOEC', 'RER')
 
             act.new_exchange(amount= -amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1484,7 +1360,7 @@ def GENERATE_ACTS_WIND(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.4, el
 
     capacity = 2000 #kWp
     new_name = "hydrogen production, gaseous, {} bar, from {} electrolysis, onshore wind, global cf [{}]".format(BAR_ACT[electrolyzer],electrolyzer.upper(),round(cf_wind,3))
-    check_act = [act for act in bw.Database(db_ei) if new_name == act['name']]
+    check_act = [act for act in bd.Database(db_ei) if new_name == act['name']]
     
     tech = "onshore_wind"
     
@@ -1499,7 +1375,7 @@ def GENERATE_ACTS_WIND(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.4, el
         print("Skipped: activity '{}' already generated!".format(new_name))
     else:
         # Generate activity
-        db = bw.Database(db_ei)
+        db = bd.Database(db_ei)
         code_na = str(uuid.uuid4().hex)
         act = db.new_activity(
             **{
@@ -1535,7 +1411,7 @@ def GENERATE_ACTS_WIND(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.4, el
             act.new_exchange(amount= amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
             
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell stack, 1MWe, PEM', 'used fuel cell stack, 1MWe, PEM', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer stack, 1MWe, PEM', 'used electrolyzer stack, 1MWe, PEM', 'RER')
 
             act.new_exchange(amount= -amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1548,7 +1424,7 @@ def GENERATE_ACTS_WIND(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.4, el
             act.new_exchange(amount=amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
             
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell balance of plant, 1MWe, PEM', 'used fuel cell balance of plant, 1MWe, PEM', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer balance of plant, 1MWe, PEM', 'used electrolyzer balance of plant, 1MWe, PEM', 'RER')
 
             act.new_exchange(amount= -amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1561,7 +1437,7 @@ def GENERATE_ACTS_WIND(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.4, el
             act.new_exchange(amount= amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell stack, 1MWe, AEC', 'used fuel cell stack, 1MWe, AEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer stack, 1MWe, AEC', 'used electrolyzer stack, 1MWe, AEC', 'RER')
 
             act.new_exchange(amount= -amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1574,7 +1450,7 @@ def GENERATE_ACTS_WIND(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.4, el
             act.new_exchange(amount=amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell balance of plant, 1MWe, AEC', 'used fuel cell balance of plant, 1MWe, AEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer balance of plant, 1MWe, AEC', 'used electrolyzer balance of plant, 1MWe, AEC', 'RER')
 
             act.new_exchange(amount= -amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1593,7 +1469,7 @@ def GENERATE_ACTS_WIND(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.4, el
             act.new_exchange(amount= amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell stack, 1MWe, SOEC', 'used fuel cell stack, 1MWe, SOEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer stack, 1MWe, SOEC', 'used electrolyzer stack, 1MWe, SOEC', 'RER')
 
             act.new_exchange(amount= -amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1606,7 +1482,7 @@ def GENERATE_ACTS_WIND(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.4, el
             act.new_exchange(amount=amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell balance of plant, 1MWe, SOEC', 'used fuel cell balance of plant, 1MWe, SOEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer balance of plant, 1MWe, SOEC', 'used electrolyzer balance of plant, 1MWe, SOEC', 'RER')
 
             act.new_exchange(amount= -amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1741,7 +1617,7 @@ def GENERATE_ACTS_WIND_OFF(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.5
 
     capacity = 2000 #kWp
     new_name = "hydrogen production, gaseous, {} bar, from {} electrolysis, offshore wind, global cf [{}]".format(BAR_ACT[electrolyzer],electrolyzer.upper(),round(cf_wind,3))
-    check_act = [act for act in bw.Database(db_ei) if new_name == act['name']]
+    check_act = [act for act in bd.Database(db_ei) if new_name == act['name']]
     
     tech = "offshore_wind"
     
@@ -1756,7 +1632,7 @@ def GENERATE_ACTS_WIND_OFF(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.5
         print("Skipped: activity '{}' already generated!".format(new_name))
     else:
         # Generate activity
-        db = bw.Database(db_ei)
+        db = bd.Database(db_ei)
         code_na = str(uuid.uuid4().hex)
         act = db.new_activity(
             **{
@@ -1792,7 +1668,7 @@ def GENERATE_ACTS_WIND_OFF(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.5
             act.new_exchange(amount= amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
             
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell stack, 1MWe, PEM', 'used fuel cell stack, 1MWe, PEM', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer stack, 1MWe, PEM', 'used electrolyzer stack, 1MWe, PEM', 'RER')
 
             act.new_exchange(amount= -amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1805,7 +1681,7 @@ def GENERATE_ACTS_WIND_OFF(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.5
             act.new_exchange(amount=amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
             
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell balance of plant, 1MWe, PEM', 'used fuel cell balance of plant, 1MWe, PEM', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer balance of plant, 1MWe, PEM', 'used electrolyzer balance of plant, 1MWe, PEM', 'RER')
 
             act.new_exchange(amount= -amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1818,7 +1694,7 @@ def GENERATE_ACTS_WIND_OFF(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.5
             act.new_exchange(amount= amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell stack, 1MWe, AEC', 'used fuel cell stack, 1MWe, AEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer stack, 1MWe, AEC', 'used electrolyzer stack, 1MWe, AEC', 'RER')
 
             act.new_exchange(amount= -amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1831,7 +1707,7 @@ def GENERATE_ACTS_WIND_OFF(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.5
             act.new_exchange(amount=amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell balance of plant, 1MWe, AEC', 'used fuel cell balance of plant, 1MWe, AEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer balance of plant, 1MWe, AEC', 'used electrolyzer balance of plant, 1MWe, AEC', 'RER')
 
             act.new_exchange(amount= -amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1850,7 +1726,7 @@ def GENERATE_ACTS_WIND_OFF(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.5
             act.new_exchange(amount= amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell stack, 1MWe, SOEC', 'used fuel cell stack, 1MWe, SOEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer stack, 1MWe, SOEC', 'used electrolyzer stack, 1MWe, SOEC', 'RER')
 
             act.new_exchange(amount= -amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -1863,7 +1739,7 @@ def GENERATE_ACTS_WIND_OFF(db_ei, cf_wind, curtailment_wind, cf_electrolyzer=0.5
             act.new_exchange(amount=amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell balance of plant, 1MWe, SOEC', 'used fuel cell balance of plant, 1MWe, SOEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer balance of plant, 1MWe, SOEC', 'used electrolyzer balance of plant, 1MWe, SOEC', 'RER')
 
             act.new_exchange(amount= -amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -2023,7 +1899,7 @@ def GENERATE_ACTS_GENERIC_ELECT(db_ei, cf_electrolyzer=0.57, electrolyzer = "pem
         act_new_name = generic_electr_act[0]
 
     new_name = "hydrogen production, gaseous, {} bar, from {} electrolysis, power from {}".format(BAR_ACT[electrolyzer],electrolyzer.upper(),act_new_name)
-    check_act = [act for act in bw.Database(db_ei) if new_name == act['name'] and generic_electr_act[2] == act['location']]
+    check_act = [act for act in bd.Database(db_ei) if new_name == act['name'] and generic_electr_act[2] == act['location']]
     
     eff_elect = COST_DATA.loc[('electrolyzer_{}'.format(electrolyzer),'eff')][excel_col_name]
     lifetime_stack = COST_DATA.loc[('electrolyzer_{}'.format(electrolyzer),'stack_lt')][excel_col_name]  
@@ -2035,7 +1911,7 @@ def GENERATE_ACTS_GENERIC_ELECT(db_ei, cf_electrolyzer=0.57, electrolyzer = "pem
         print("Skipped: activity '{}' already generated!".format(new_name))
     else:
         # Generate activity
-        db = bw.Database(db_ei)
+        db = bd.Database(db_ei)
         code_na = str(uuid.uuid4().hex)
         act = db.new_activity(
             **{
@@ -2069,7 +1945,7 @@ def GENERATE_ACTS_GENERIC_ELECT(db_ei, cf_electrolyzer=0.57, electrolyzer = "pem
             act.new_exchange(amount= amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
             
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell stack, 1MWe, PEM', 'used fuel cell stack, 1MWe, PEM', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer stack, 1MWe, PEM', 'used electrolyzer stack, 1MWe, PEM', 'RER')
 
             act.new_exchange(amount= -amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -2082,7 +1958,7 @@ def GENERATE_ACTS_GENERIC_ELECT(db_ei, cf_electrolyzer=0.57, electrolyzer = "pem
             act.new_exchange(amount=amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
             
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell balance of plant, 1MWe, PEM', 'used fuel cell balance of plant, 1MWe, PEM', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer balance of plant, 1MWe, PEM', 'used electrolyzer balance of plant, 1MWe, PEM', 'RER')
 
             act.new_exchange(amount= -amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -2095,7 +1971,7 @@ def GENERATE_ACTS_GENERIC_ELECT(db_ei, cf_electrolyzer=0.57, electrolyzer = "pem
             act.new_exchange(amount= amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell stack, 1MWe, AEC', 'used fuel cell stack, 1MWe, AEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer stack, 1MWe, AEC', 'used electrolyzer stack, 1MWe, AEC', 'RER')
 
             act.new_exchange(amount= -amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -2108,7 +1984,7 @@ def GENERATE_ACTS_GENERIC_ELECT(db_ei, cf_electrolyzer=0.57, electrolyzer = "pem
             act.new_exchange(amount=amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell balance of plant, 1MWe, AEC', 'used fuel cell balance of plant, 1MWe, AEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer balance of plant, 1MWe, AEC', 'used electrolyzer balance of plant, 1MWe, AEC', 'RER')
 
             act.new_exchange(amount= -amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -2127,7 +2003,7 @@ def GENERATE_ACTS_GENERIC_ELECT(db_ei, cf_electrolyzer=0.57, electrolyzer = "pem
             act.new_exchange(amount= amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell stack, 1MWe, SOEC', 'used fuel cell stack, 1MWe, SOEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer stack, 1MWe, SOEC', 'used electrolyzer stack, 1MWe, SOEC', 'RER')
 
             act.new_exchange(amount= -amount_elect_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -2140,7 +2016,7 @@ def GENERATE_ACTS_GENERIC_ELECT(db_ei, cf_electrolyzer=0.57, electrolyzer = "pem
             act.new_exchange(amount=amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
 
-            add_act = find_bw_act(db_ei, 'treatment of fuel cell balance of plant, 1MWe, SOEC', 'used fuel cell balance of plant, 1MWe, SOEC', 'RER')
+            add_act = find_bw_act(db_ei, 'treatment of electrolyzer balance of plant, 1MWe, SOEC', 'used electrolyzer balance of plant, 1MWe, SOEC', 'RER')
 
             act.new_exchange(amount= -amount_bop_unit, input = add_act.key, type="technosphere", location = add_act['location'],
                              name = add_act['name'], product = add_act['reference product'] ).save()
@@ -2539,7 +2415,7 @@ def calculate_cbam_alpha(
 
     # 1) Identify relevant activities and label them as steel/iron
     matched_rows = []  # each entry: dict with act identifiers + material
-    for act in bw.Database(db_name):
+    for act in bd.Database(db_name):
         activity_name = (act.get("name") or "").lower()
         ref_product = (act.get("reference product") or "").lower()
 
@@ -2572,7 +2448,7 @@ def calculate_cbam_alpha(
 
         # pick the exact activity
         act_sel = next(
-            act for act in bw.Database(db_name)
+            act for act in bd.Database(db_name)
             if act["name"] == row["name"]
             and act["reference product"] == row["reference product"]
             and act["location"] == row["location"]
@@ -2580,16 +2456,16 @@ def calculate_cbam_alpha(
 
         # Choose precursor list based on material label
         cbam_precursors_excl = (
-            cbam_precursors_excl_iron if row["material"] == "iron" else cbam_precursors_excl_steel
+            cbam_precursors_excl_steel if row["material"] == "steel" else cbam_precursors_excl_iron
         )
-
+        
         # Init LCA once; then redo for each activity/exchange
         if lca is None:
-            lca = bw.LCA({act_sel: 1}, method=method)
+            lca = bc.LCA({act_sel.id: 1}, method=method)
             lca.lci()
             lca.lcia()
         else:
-            lca.redo_lcia({act_sel: 1})
+            lca.redo_lcia({act_sel.id: 1})
 
         result_array = []
         cbam_amount = 0.0
@@ -2600,11 +2476,11 @@ def calculate_cbam_alpha(
             scope_cbam = define_scope_cbam(exc.as_dict(), cbam_precursors_excl)
 
             if exc["type"] == "technosphere":
-                lca.redo_lcia({exc.input: exc["amount"]})
+                lca.lcia(demand={exc.input.id: exc["amount"]})
                 amount = float(lca.score)
             elif exc["type"] == "biosphere":
                 # biosphere CF extraction (same approach as your original)
-                cf = lca.characterization_matrix[lca.biosphere_dict[exc.input], :].sum()
+                cf = lca.characterization_matrix[lca.biosphere_dict[exc.input.id], :].sum()
                 amount = float(cf * exc["amount"])
             else:
                 continue
@@ -2641,3 +2517,992 @@ def calculate_cbam_alpha(
 
     alpha = float(np.mean(share_cbams)) if share_cbams else 0.0
     return alpha, stored_data
+
+# =========================================================
+# 1. FAST LOOKUP / CACHE HELPERS
+# =========================================================
+
+def build_db_index(db_name):
+    """
+    Build a fast in-memory index for one Brightway database.
+
+    Returns a dict with:
+    - db: Brightway Database object
+    - by_name: {name: [act, ...]}
+    - by_name_ref: {(name, ref_product): [act, ...]}
+    - by_name_ref_loc: {(name, ref_product, location): act}
+    - existing_names: set of names
+    - existing_name_loc: set of (name, location)
+    """
+    db = bd.Database(db_name)
+
+    by_name = defaultdict(list)
+    by_name_ref = defaultdict(list)
+    by_name_ref_loc = {}
+    existing_names = set()
+    existing_name_loc = set()
+
+    for act in db:
+        name = act.get("name")
+        ref = act.get("reference product")
+        loc = act.get("location")
+
+        by_name[name].append(act)
+        by_name_ref[(name, ref)].append(act)
+        by_name_ref_loc[(name, ref, loc)] = act
+
+        existing_names.add(name)
+        existing_name_loc.add((name, loc))
+
+    return {
+        "db": db,
+        "by_name": by_name,
+        "by_name_ref": by_name_ref,
+        "by_name_ref_loc": by_name_ref_loc,
+        "existing_names": existing_names,
+        "existing_name_loc": existing_name_loc,
+    }
+
+
+def get_act(index, name, ref_product, location):
+    """
+    Fast exact lookup for an activity from the prebuilt DB index.
+    """
+    try:
+        return index["by_name_ref_loc"][(name, ref_product, location)]
+    except KeyError:
+        raise KeyError(
+            f"Activity not found in DB index: "
+            f"name={name!r}, ref_product={ref_product!r}, location={location!r}"
+        )
+
+
+def get_country_like_locations(index, name, ref_product, max_len=3):
+    """
+    Return all locations for activities matching (name, reference product),
+    restricted to short country-like codes (len <= max_len).
+    """
+    acts = index["by_name_ref"].get((name, ref_product), [])
+    return [act["location"] for act in acts if len(act["location"]) <= max_len]
+
+
+def build_ratio_cache(all_ei_databases):
+    """
+    Cache curve-fit coefficients for all databases and ratio types.
+    """
+    cache = {}
+    for db in all_ei_databases:
+        for info_type in [
+            "ratio_pv_curtailed",
+            "ratio_wind_curtailed_on",
+        ]:
+            row = DF_RATIOS.loc[(info_type, db)]
+            cache[(db, info_type)] = (row["a"], row["b"], row["c"])
+    return cache
+
+
+def curve_fit_fast(x, ratio_cache, db, info_type):
+    """
+    Fast version of curve_fit_f using cached coefficients.
+    """
+    if x <= 0:
+        return 0
+
+    a, b, c = ratio_cache[(db, info_type)]
+    ratio = 1 / (1 + np.exp(-(x - b) * a)) ** c
+    return round(ratio, 3)
+
+
+def build_biosphere_cache():
+    """
+    Cache all biosphere flows used repeatedly in the generators.
+    """
+    return {
+        "heat_waste": search_biosphere_entries(
+            BIOSPHERE_DB,
+            "Heat, waste",
+            ("air", "urban air close to ground"),
+            "megajoule",
+        ),
+        "solar_energy": search_biosphere_entries(
+            BIOSPHERE_DB,
+            "Energy, solar, converted",
+            ("natural resource", "in air"),
+            "megajoule",
+        ),
+        "wind_energy": search_biosphere_entries(
+            BIOSPHERE_DB,
+            "Energy, kinetic (in wind), converted",
+            ("natural resource", "in air"),
+            "megajoule",
+        ),
+        "hydrogen": search_biosphere_entries(
+            BIOSPHERE_DB,
+            "Hydrogen",
+            ("air",),
+            "kilogram",
+        ),
+        "oxygen": search_biosphere_entries(
+            BIOSPHERE_DB,
+            "Oxygen",
+            ("air",),
+            "kilogram",
+        ),
+        "land_occ": search_biosphere_entries(
+            BIOSPHERE_DB,
+            "Occupation, industrial area",
+            ("natural resource", "land"),
+            "square meter-year",
+        ),
+        "land_from": search_biosphere_entries(
+            BIOSPHERE_DB,
+            "Transformation, from industrial area",
+            ("natural resource", "land"),
+            "square meter",
+        ),
+        "land_to": search_biosphere_entries(
+            BIOSPHERE_DB,
+            "Transformation, to industrial area",
+            ("natural resource", "land"),
+            "square meter",
+        ),
+    }
+
+
+def get_cost_params(excel_col_name, electrolyzer, tech=None):
+    """
+    Cache commonly used COST_DATA values for one database / electrolyzer.
+    """
+    out = {
+        "eff_elect": COST_DATA.loc[(f"electrolyzer_{electrolyzer}", "eff")][excel_col_name],
+        "lifetime_stack": COST_DATA.loc[(f"electrolyzer_{electrolyzer}", "stack_lt")][excel_col_name],
+        "lifetime_bop": COST_DATA.loc[(f"electrolyzer_{electrolyzer}", "bop_lt")][excel_col_name],
+        "h2_leakage_factor": COST_DATA.loc[("h2_leakage", "-")][excel_col_name],
+        "land_m2_kw": COST_DATA.loc[(f"electrolyzer_{electrolyzer}", "land_m2_kw")][excel_col_name],
+    }
+
+    if tech is not None:
+        out["lifetime_tech"] = COST_DATA.loc[(tech, "lifetime")][excel_col_name]
+
+    return out
+
+
+def build_common_act_cache(index):
+    """
+    Cache repeated technosphere activities once per DB.
+    """
+    return {
+        # PEM
+        ("pem", "stack_prod"): get_act(
+            index,
+            "electrolyzer production, 1MWe, PEM, Stack",
+            "electrolyzer, 1MWe, PEM, Stack",
+            "RER",
+        ),
+        ("pem", "stack_treat"): get_act(
+            index,
+            "treatment of electrolyzer stack, 1MWe, PEM",
+            "used electrolyzer stack, 1MWe, PEM",
+            "RER",
+        ),
+        ("pem", "bop_prod"): get_act(
+            index,
+            "electrolyzer production, 1MWe, PEM, Balance of Plant",
+            "electrolyzer, 1MWe, PEM, Balance of Plant",
+            "RER",
+        ),
+        ("pem", "bop_treat"): get_act(
+            index,
+            "treatment of electrolyzer balance of plant, 1MWe, PEM",
+            "used electrolyzer balance of plant, 1MWe, PEM",
+            "RER",
+        ),
+
+        # AEC
+        ("aec", "stack_prod"): get_act(
+            index,
+            "electrolyzer production, 1MWe, AEC, Stack",
+            "electrolyzer, 1MWe, AEC, Stack",
+            "RER",
+        ),
+        ("aec", "stack_treat"): get_act(
+            index,
+            "treatment of electrolyzer stack, 1MWe, AEC",
+            "used electrolyzer stack, 1MWe, AEC",
+            "RER",
+        ),
+        ("aec", "bop_prod"): get_act(
+            index,
+            "electrolyzer production, 1MWe, AEC, Balance of Plant",
+            "electrolyzer, 1MWe, AEC, Balance of Plant",
+            "RER",
+        ),
+        ("aec", "bop_treat"): get_act(
+            index,
+            "treatment of electrolyzer balance of plant, 1MWe, AEC",
+            "used electrolyzer balance of plant, 1MWe, AEC",
+            "RER",
+        ),
+        ("aec", "koh"): get_act(
+            index,
+            "market for potassium hydroxide",
+            "potassium hydroxide",
+            "GLO",
+        ),
+
+        # SOEC
+        ("soec", "stack_prod"): get_act(
+            index,
+            "electrolyzer production, 1MWe, SOEC, Stack",
+            "electrolyzer, 1MWe, SOEC, Stack",
+            "RER",
+        ),
+        ("soec", "stack_treat"): get_act(
+            index,
+            "treatment of electrolyzer stack, 1MWe, SOEC",
+            "used electrolyzer stack, 1MWe, SOEC",
+            "RER",
+        ),
+        ("soec", "bop_prod"): get_act(
+            index,
+            "electrolyzer production, 1MWe, SOEC, Balance of Plant",
+            "electrolyzer, 1MWe, SOEC, Balance of Plant",
+            "RER",
+        ),
+        ("soec", "bop_treat"): get_act(
+            index,
+            "treatment of electrolyzer balance of plant, 1MWe, SOEC",
+            "used electrolyzer balance of plant, 1MWe, SOEC",
+            "RER",
+        ),
+
+        # Common
+        ("common", "water_deionised"): get_act(
+            index,
+            "market for water, deionised",
+            "water, deionised",
+            "RoW",
+        ),
+        ("common", "tap_water"): get_act(
+            index,
+            "market for tap water",
+            "tap water",
+            "Europe without Switzerland",
+        ),
+        ("common", "wastewater"): get_act(
+            index,
+            "treatment of wastewater, average, wastewater treatment",
+            "wastewater, average",
+            "RoW",
+        ),
+        ("common", "lubricating_oil"): get_act(
+            index,
+            "market for lubricating oil",
+            "lubricating oil",
+            "RER",
+        ),
+        ("common", "waste_mineral_oil"): get_act(
+            index,
+            "market for waste mineral oil",
+            "waste mineral oil",
+            "Europe without Switzerland",
+        ),
+
+        # PV
+        ("pv", "installation"): get_act(
+            index,
+            "photovoltaic open ground installation, 560 kWp, single-Si, on open ground",
+            "photovoltaic open ground installation, 560 kWp, single-Si, on open ground",
+            "CH",
+        ),
+
+        # Onshore wind
+        ("wind_on", "network"): get_act(
+            index,
+            "market for wind turbine network connection, 2MW, onshore",
+            "wind turbine network connection, 2MW, onshore",
+            "GLO",
+        ),
+        ("wind_on", "turbine"): get_act(
+            index,
+            "market for wind turbine, 2MW, onshore",
+            "wind turbine, 2MW, onshore",
+            "GLO",
+        ),
+
+        # Offshore wind
+        ("wind_off", "fixed"): get_act(
+            index,
+            "market for wind power plant, 2MW, offshore, fixed parts",
+            "wind power plant, 2MW, offshore, fixed parts",
+            "GLO",
+        ),
+        ("wind_off", "moving"): get_act(
+            index,
+            "market for wind power plant, 2MW, offshore, moving parts",
+            "wind power plant, 2MW, offshore, moving parts",
+            "GLO",
+        ),
+    }
+
+
+# =========================================================
+# 2. SMALL EXCHANGE HELPERS
+# =========================================================
+
+def _add_technosphere_exchange(act, add_act, amount, unit=None):
+    kwargs = {
+        "input": add_act.key,
+        "amount": amount,
+        "type": "technosphere",
+    }
+    if unit is not None:
+        kwargs["unit"] = unit
+
+    # keep metadata like in your original code where relevant
+    kwargs["location"] = add_act.get("location")
+    kwargs["name"] = add_act.get("name")
+    kwargs["product"] = add_act.get("reference product")
+
+    act.new_exchange(**kwargs).save()
+
+
+def _add_biosphere_exchange(act, bio_flow, amount, unit=None):
+    kwargs = {
+        "input": bio_flow.key,
+        "amount": amount,
+        "type": "biosphere",
+    }
+    if unit is not None:
+        kwargs["unit"] = unit
+
+    act.new_exchange(**kwargs).save()
+
+
+def _create_activity(index, db_ei, new_name, ref_product, location, comment=None):
+    db = index["db"]
+    code_na = str(uuid.uuid4().hex)
+
+    act_data = {
+        "name": new_name,
+        "code": code_na,
+        "unit": "kilogram",
+        "reference product": ref_product,
+        "location": location,
+        "production amount": 1.0,
+    }
+    if comment is not None:
+        act_data["comment"] = comment
+
+    act = db.new_activity(**act_data)
+    act.save()
+
+    act.new_exchange(
+        **{
+            "input": (db_ei, code_na),
+            "amount": 1,
+            "type": "production",
+        }
+    ).save()
+
+    # update fast existence sets immediately
+    index["existing_names"].add(new_name)
+    index["existing_name_loc"].add((new_name, location))
+
+    return act
+
+
+def _add_electrolyzer_exchanges(
+    act,
+    electrolyzer,
+    common_acts,
+    amount_electricity,
+    cf_electrolyzer,
+    lifetime_stack,
+    lifetime_bop,
+):
+    """
+    Add shared stack / BoP exchanges for PEM, AEC, SOEC.
+    """
+    if electrolyzer not in {"pem", "aec", "soec"}:
+        raise ValueError(
+            f"Electrolyzer '{electrolyzer}' not supported."
+        )
+
+    amount_elect_unit = 1 / (
+        1000 * cf_electrolyzer * HOURS_YR * lifetime_stack / amount_electricity
+    )
+
+    amount_bop_unit = (lifetime_stack / lifetime_bop) / (
+        1000 * cf_electrolyzer * HOURS_YR * lifetime_stack / amount_electricity
+    )
+
+    _add_technosphere_exchange(
+        act,
+        common_acts[(electrolyzer, "stack_prod")],
+        amount_elect_unit,
+    )
+    _add_technosphere_exchange(
+        act,
+        common_acts[(electrolyzer, "stack_treat")],
+        -amount_elect_unit,
+    )
+    _add_technosphere_exchange(
+        act,
+        common_acts[(electrolyzer, "bop_prod")],
+        amount_bop_unit,
+    )
+    _add_technosphere_exchange(
+        act,
+        common_acts[(electrolyzer, "bop_treat")],
+        -amount_bop_unit,
+    )
+
+    if electrolyzer == "aec":
+        _add_technosphere_exchange(
+            act,
+            common_acts[("aec", "koh")],
+            3.70e-3,
+        )
+
+
+def _add_common_h2_biosphere(act, biosphere_cache, h2_leakage_factor):
+    _add_biosphere_exchange(
+        act,
+        biosphere_cache["hydrogen"],
+        h2_leakage_factor,
+        unit="kilogram",
+    )
+    _add_biosphere_exchange(
+        act,
+        biosphere_cache["oxygen"],
+        8,
+        unit="kilogram",
+    )
+
+
+def _add_common_land_use(
+    act,
+    biosphere_cache,
+    land_m2_kw,
+    cf_electrolyzer,
+    amount_electricity,
+    lifetime_bop,
+):
+    # Occupation
+    _add_biosphere_exchange(
+        act,
+        biosphere_cache["land_occ"],
+        ((land_m2_kw * 1000) / (1000 * cf_electrolyzer * HOURS_YR / amount_electricity)),
+        unit="square meter-year",
+    )
+
+    # Transformation from
+    transf_amount = (land_m2_kw * 1000) / (
+        1000 * cf_electrolyzer * HOURS_YR * lifetime_bop / amount_electricity
+    )
+    _add_biosphere_exchange(
+        act,
+        biosphere_cache["land_from"],
+        transf_amount,
+        unit="square meter",
+    )
+
+    # Transformation to
+    _add_biosphere_exchange(
+        act,
+        biosphere_cache["land_to"],
+        transf_amount,
+        unit="square meter",
+    )
+
+
+# =========================================================
+# 3. FAST GENERATORS
+# =========================================================
+
+def GENERATE_ACTS_GM_PV_FAST(
+    index,
+    common_acts,
+    biosphere_cache,
+    db_ei,
+    cf_pv,
+    curtailment_pv,
+    cf_electrolyzer=0.3,
+    electrolyzer="pem",
+    params=None,
+):
+    """
+    Fast cached version of GENERATE_ACTS_GM_PV.
+    """
+    if params is None:
+        raise ValueError("params must be provided from get_cost_params(...).")
+
+    capacity = 560 * 0.895
+    kg_water_unit = 2871.8 * 20
+
+    new_name = (
+        f"hydrogen production, gaseous, {BAR_ACT[electrolyzer]} bar, "
+        f"from {electrolyzer.upper()} electrolysis, solar PV ground-mounted, global cf [{round(cf_pv, 3)}]"
+    )
+
+    if new_name in index["existing_names"]:
+        print(f"Skipped: activity '{new_name}' already generated!")
+        return
+
+    lifetime_pv = params["lifetime_tech"]
+    eff_elect = params["eff_elect"]
+    lifetime_stack = params["lifetime_stack"]
+    lifetime_bop = params["lifetime_bop"]
+    h2_leakage_factor = params["h2_leakage_factor"]
+    land_m2_kw = params["land_m2_kw"]
+
+    act = _create_activity(
+        index=index,
+        db_ei=db_ei,
+        new_name=new_name,
+        ref_product=f"hydrogen, gaseous, {BAR_ACT[electrolyzer]} bar",
+        location="GLO",
+        comment=(
+            f"Hydrogen production via water electrolysis with a {electrolyzer} "
+            f"electrolyzer with a capacity factor of {round(cf_electrolyzer, 2)} "
+            f"and solar PV capacity factor of {round(cf_pv, 3)}"
+        ),
+    )
+
+    amount_electricity = EN_H2 / (3.6 * eff_elect)
+
+    _add_electrolyzer_exchanges(
+        act,
+        electrolyzer,
+        common_acts,
+        amount_electricity,
+        cf_electrolyzer,
+        lifetime_stack,
+        lifetime_bop,
+    )
+
+    # water, deionised
+    _add_technosphere_exchange(
+        act,
+        common_acts[("common", "water_deionised")],
+        AMOUNT_WATER_ELECTROLYSIS,
+        unit="kilogram",
+    )
+
+    # PV installation
+    amount_kwh = 1 / (
+        capacity * lifetime_pv * cf_pv * HOURS_YR * (1 - curtailment_pv)
+    )
+    _add_technosphere_exchange(
+        act,
+        common_acts[("pv", "installation")],
+        amount_kwh * amount_electricity,
+        unit="unit",
+    )
+
+    # tap water
+    amount_tap = kg_water_unit * (
+        1 / (capacity * lifetime_pv * cf_pv * HOURS_YR * (1 - curtailment_pv))
+    )
+    _add_technosphere_exchange(
+        act,
+        common_acts[("common", "tap_water")],
+        amount_tap * amount_electricity,
+        unit="kilogram",
+    )
+
+    # wastewater
+    amount_ww = (
+        kg_water_unit
+        * (1 / (capacity * lifetime_pv * cf_pv * HOURS_YR * (1 - curtailment_pv)))
+        / 1000
+    )
+    _add_technosphere_exchange(
+        act,
+        common_acts[("common", "wastewater")],
+        -amount_ww * amount_electricity,
+        unit="cubic meter",
+    )
+
+    # heat waste
+    _add_biosphere_exchange(
+        act,
+        biosphere_cache["heat_waste"],
+        0.25027 * amount_electricity,
+        unit="megajoule",
+    )
+
+    # solar energy converted
+    _add_biosphere_exchange(
+        act,
+        biosphere_cache["solar_energy"],
+        3.8503 * amount_electricity,
+        unit="megajoule",
+    )
+
+    _add_common_h2_biosphere(act, biosphere_cache, h2_leakage_factor)
+
+    _add_common_land_use(
+        act,
+        biosphere_cache,
+        land_m2_kw,
+        cf_electrolyzer,
+        amount_electricity,
+        lifetime_bop,
+    )
+
+    act.save()
+
+
+def GENERATE_ACTS_WIND_FAST(
+    index,
+    common_acts,
+    biosphere_cache,
+    db_ei,
+    cf_wind,
+    curtailment_wind,
+    cf_electrolyzer=0.4,
+    electrolyzer="pem",
+    params=None,
+):
+    """
+    Fast cached version of GENERATE_ACTS_WIND.
+    """
+    if params is None:
+        raise ValueError("params must be provided from get_cost_params(...).")
+
+    capacity = 2000
+
+    new_name = (
+        f"hydrogen production, gaseous, {BAR_ACT[electrolyzer]} bar, "
+        f"from {electrolyzer.upper()} electrolysis, onshore wind, global cf [{round(cf_wind, 3)}]"
+    )
+
+    if new_name in index["existing_names"]:
+        print(f"Skipped: activity '{new_name}' already generated!")
+        return
+
+    lifetime_wind = params["lifetime_tech"]
+    eff_elect = params["eff_elect"]
+    lifetime_stack = params["lifetime_stack"]
+    lifetime_bop = params["lifetime_bop"]
+    h2_leakage_factor = params["h2_leakage_factor"]
+    land_m2_kw = params["land_m2_kw"]
+
+    act = _create_activity(
+        index=index,
+        db_ei=db_ei,
+        new_name=new_name,
+        ref_product=f"hydrogen, gaseous, {BAR_ACT[electrolyzer]} bar",
+        location="GLO",
+        comment=(
+            f"Hydrogen production via water electrolysis with a {electrolyzer} "
+            f"electrolyzer with a capacity factor of {round(cf_electrolyzer, 2)} "
+            f"and onshore wind capacity factor of {round(cf_wind, 2)}"
+        ),
+    )
+
+    amount_electricity = EN_H2 / (3.6 * eff_elect)
+
+    _add_electrolyzer_exchanges(
+        act,
+        electrolyzer,
+        common_acts,
+        amount_electricity,
+        cf_electrolyzer,
+        lifetime_stack,
+        lifetime_bop,
+    )
+
+    # water, deionised
+    _add_technosphere_exchange(
+        act,
+        common_acts[("common", "water_deionised")],
+        AMOUNT_WATER_ELECTROLYSIS,
+        unit="kilogram",
+    )
+
+    # lubricating oil
+    amount_lube = 157.5 / (
+        capacity * cf_wind * HOURS_YR * (1 - curtailment_wind)
+    )
+    _add_technosphere_exchange(
+        act,
+        common_acts[("common", "lubricating_oil")],
+        amount_lube * amount_electricity,
+        unit="kilogram",
+    )
+
+    # waste mineral oil
+    _add_technosphere_exchange(
+        act,
+        common_acts[("common", "waste_mineral_oil")],
+        -amount_lube * amount_electricity,
+        unit="kilogram",
+    )
+
+    # network connection
+    amount_infra = 1 / (
+        capacity * lifetime_wind * cf_wind * HOURS_YR * (1 - curtailment_wind)
+    )
+    _add_technosphere_exchange(
+        act,
+        common_acts[("wind_on", "network")],
+        amount_infra * amount_electricity,
+        unit="unit",
+    )
+
+    # turbine
+    _add_technosphere_exchange(
+        act,
+        common_acts[("wind_on", "turbine")],
+        amount_infra * amount_electricity,
+        unit="unit",
+    )
+
+    # kinetic wind energy
+    _add_biosphere_exchange(
+        act,
+        biosphere_cache["wind_energy"],
+        3.87 * amount_electricity,
+        unit="megajoule",
+    )
+
+    _add_common_h2_biosphere(act, biosphere_cache, h2_leakage_factor)
+
+    _add_common_land_use(
+        act,
+        biosphere_cache,
+        land_m2_kw,
+        cf_electrolyzer,
+        amount_electricity,
+        lifetime_bop,
+    )
+
+    act.save()
+
+
+def GENERATE_ACTS_WIND_OFF_FAST(
+    index,
+    common_acts,
+    biosphere_cache,
+    db_ei,
+    cf_wind,
+    curtailment_wind,
+    cf_electrolyzer=0.55,
+    electrolyzer="pem",
+    params=None,
+):
+    """
+    Fast cached version of GENERATE_ACTS_WIND_OFF.
+    """
+    if params is None:
+        raise ValueError("params must be provided from get_cost_params(...).")
+
+    capacity = 2000
+
+    new_name = (
+        f"hydrogen production, gaseous, {BAR_ACT[electrolyzer]} bar, "
+        f"from {electrolyzer.upper()} electrolysis, offshore wind, global cf [{round(cf_wind, 3)}]"
+    )
+
+    if new_name in index["existing_names"]:
+        print(f"Skipped: activity '{new_name}' already generated!")
+        return
+
+    lifetime_wind = params["lifetime_tech"]
+    eff_elect = params["eff_elect"]
+    lifetime_stack = params["lifetime_stack"]
+    lifetime_bop = params["lifetime_bop"]
+    h2_leakage_factor = params["h2_leakage_factor"]
+    land_m2_kw = params["land_m2_kw"]
+
+    act = _create_activity(
+        index=index,
+        db_ei=db_ei,
+        new_name=new_name,
+        ref_product=f"hydrogen, gaseous, {BAR_ACT[electrolyzer]} bar",
+        location="GLO",
+        comment=(
+            f"Hydrogen production via water electrolysis with a {electrolyzer} "
+            f"electrolyzer with a capacity factor of {round(cf_electrolyzer, 2)} "
+            f"and offshore wind capacity factor of {round(cf_wind, 2)}"
+        ),
+    )
+
+    amount_electricity = EN_H2 / (3.6 * eff_elect)
+
+    _add_electrolyzer_exchanges(
+        act,
+        electrolyzer,
+        common_acts,
+        amount_electricity,
+        cf_electrolyzer,
+        lifetime_stack,
+        lifetime_bop,
+    )
+
+    # water, deionised
+    _add_technosphere_exchange(
+        act,
+        common_acts[("common", "water_deionised")],
+        AMOUNT_WATER_ELECTROLYSIS,
+        unit="kilogram",
+    )
+
+    # lubricating oil
+    amount_lube = 157.5 / (
+        capacity * cf_wind * HOURS_YR * (1 - curtailment_wind)
+    )
+    _add_technosphere_exchange(
+        act,
+        common_acts[("common", "lubricating_oil")],
+        amount_lube * amount_electricity,
+        unit="kilogram",
+    )
+
+    # Note: your original offshore function computed waste mineral oil amount
+    # but did not actually add that exchange. I keep the original behavior here,
+    # i.e. no waste mineral oil exchange is added.
+
+    # fixed parts
+    amount_infra = 1 / (
+        capacity * lifetime_wind * cf_wind * HOURS_YR * (1 - curtailment_wind)
+    )
+    _add_technosphere_exchange(
+        act,
+        common_acts[("wind_off", "fixed")],
+        amount_infra * amount_electricity,
+        unit="unit",
+    )
+
+    # moving parts
+    _add_technosphere_exchange(
+        act,
+        common_acts[("wind_off", "moving")],
+        amount_infra * amount_electricity,
+        unit="unit",
+    )
+
+    # kinetic wind energy
+    _add_biosphere_exchange(
+        act,
+        biosphere_cache["wind_energy"],
+        3.87 * amount_electricity,
+        unit="megajoule",
+    )
+
+    _add_common_h2_biosphere(act, biosphere_cache, h2_leakage_factor)
+
+    _add_common_land_use(
+        act,
+        biosphere_cache,
+        land_m2_kw,
+        cf_electrolyzer,
+        amount_electricity,
+        lifetime_bop,
+    )
+
+    act.save()
+
+
+def GENERATE_ACTS_GENERIC_ELECT_FAST(
+    index,
+    common_acts,
+    biosphere_cache,
+    db_ei,
+    cf_electrolyzer=0.57,
+    electrolyzer="pem",
+    generic_electr_act=None,
+    params=None,
+):
+    """
+    Fast cached version of GENERATE_ACTS_GENERIC_ELECT.
+    """
+    if params is None:
+        raise ValueError("params must be provided from get_cost_params(...).")
+
+    if generic_electr_act is None:
+        generic_electr_act = [
+            "electricity production, hydro, reservoir, alpine region",
+            "electricity, high voltage",
+            "RoW",
+        ]
+
+    # for naming consistency
+    if generic_electr_act[0] == "market group for electricity, medium voltage":
+        act_new_name = "market for electricity, medium voltage"
+    else:
+        act_new_name = generic_electr_act[0]
+
+    new_name = (
+        f"hydrogen production, gaseous, {BAR_ACT[electrolyzer]} bar, "
+        f"from {electrolyzer.upper()} electrolysis, power from {act_new_name}"
+    )
+
+    if (new_name, generic_electr_act[2]) in index["existing_name_loc"]:
+        print(f"Skipped: activity '{new_name}' already generated!")
+        return
+
+    eff_elect = params["eff_elect"]
+    lifetime_stack = params["lifetime_stack"]
+    lifetime_bop = params["lifetime_bop"]
+    h2_leakage_factor = params["h2_leakage_factor"]
+    land_m2_kw = params["land_m2_kw"]
+
+    act = _create_activity(
+        index=index,
+        db_ei=db_ei,
+        new_name=new_name,
+        ref_product=f"hydrogen, gaseous, {BAR_ACT[electrolyzer]} bar",
+        location=generic_electr_act[2],
+        comment=None,
+    )
+
+    amount_electricity = EN_H2 / (3.6 * eff_elect)
+
+    _add_electrolyzer_exchanges(
+        act,
+        electrolyzer,
+        common_acts,
+        amount_electricity,
+        cf_electrolyzer,
+        lifetime_stack,
+        lifetime_bop,
+    )
+
+    # water, deionised
+    _add_technosphere_exchange(
+        act,
+        common_acts[("common", "water_deionised")],
+        AMOUNT_WATER_ELECTROLYSIS,
+        unit="kilogram",
+    )
+
+    # power exchange from exact regional power activity
+    add_act = get_act(
+        index,
+        generic_electr_act[0],
+        generic_electr_act[1],
+        generic_electr_act[2],
+    )
+    _add_technosphere_exchange(
+        act,
+        add_act,
+        amount_electricity,
+        unit="kilogram",
+    )
+
+    _add_common_h2_biosphere(act, biosphere_cache, h2_leakage_factor)
+
+    _add_common_land_use(
+        act,
+        biosphere_cache,
+        land_m2_kw,
+        cf_electrolyzer,
+        amount_electricity,
+        lifetime_bop,
+    )
+
+    act.save()

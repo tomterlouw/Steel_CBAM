@@ -122,46 +122,32 @@ WASTE_EXCHANGES=['hazardous waste, for underground deposit',
                  'blast furnace slag, Recycled Content cut-off'
                 ]
 
-CO2_emission_factor_hydrogen = {'coal gasification': 24, #https://iea.blob.core.windows.net/assets/acc7a642-e42b-4972-8893-2f03bf0bfa03/Towardshydrogendefinitionsbasedontheiremissionsintensity.pdf?utm_source=chatgpt.com
-                                'steam methane reforming': 11, #https://iea.blob.core.windows.net/assets/acc7a642-e42b-4972-8893-2f03bf0bfa03/Towardshydrogendefinitionsbasedontheiremissionsintensity.pdf?utm_source=chatgpt.com
-                                'hydrogen production, gaseous, 30 bar, from PEM electrolysis': 0,
-                                'other': 0}
+dict_types = {
+            "steel production, electric, low-alloyed, secondary steel, using scrap iron" : "secondary steel (EAF)",
+            "steel production, electric, unalloyed, secondary steel, using scrap iron" : "secondary steel (EAF)",
 
-# https://taxation-customs.ec.europa.eu/document/download/017e46f1-dd1a-4235-b2d7-dafcc6692acf_en?filename=Default%20values%20transitional%20period.pdf
-CO2_emission_factor_precursors_kgCO2_kg = {'sintered ore': 0.36, #https://taxation-customs.ec.europa.eu/document/download/017e46f1-dd1a-4235-b2d7-dafcc6692acf_en?filename=Default%20values%20transitional%20period.pdf, 'Weighted average primary', CN 2601 12 00
-                                 'pig iron': 2.07, #https://taxation-customs.ec.europa.eu/document/download/017e46f1-dd1a-4235-b2d7-dafcc6692acf_en?filename=Default%20values%20transitional%20period.pdf, 'Weighted average primary', CN 7201
-                                  'iron scrap': 0,
-                                   'iron scrap, sorted, pressed': 0,
-                                    'iron ore concentrate':0,
-                                      'iron ore beneficiation':0,
-                                  'ferro-chromium': 5.45, #https://taxation-customs.ec.europa.eu/document/download/017e46f1-dd1a-4235-b2d7-dafcc6692acf_en?filename=Default%20values%20transitional%20period.pdf, 'Weighted average primary'
+            "pig iron production, hydrogen-based direct reduction iron": "iron production (H$_2$-DRI)",
 
-                                 'ferro-manganese': 3.51, #https://taxation-customs.ec.europa.eu/document/download/017e46f1-dd1a-4235-b2d7-dafcc6692acf_en?filename=Default%20values%20transitional%20period.pdf, 'Weighted average primary'
+            "steel production, natural gas-based direct reduction iron-electric arc furnace, low-alloyed": "primary steel (DRI-EAF, NG)",
+            "steel production, natural gas-based direct reduction iron-electric arc furnace, unalloyed": "primary steel (DRI-EAF, NG)",
 
-                                 'ferro-nickel': 6.26,  #https://taxation-customs.ec.europa.eu/document/download/017e46f1-dd1a-4235-b2d7-dafcc6692acf_en?filename=Default%20values%20transitional%20period.pdf, 'Weighted average primary'
+            "steel production, electric, low-alloyed, primary steel, using direct reduced iron": "primary steel (DRI-EAF, coal)",
+            "steel production, electric, unalloyed, primary steel, using direct reduced iron": "primary steel (DRI-EAF, coal)",
 
-                                 'direct reduced iron': 0.70, #NOT CLEAR IN JRC publication so average taken from Table 4.1, https://www.ipcc-nggip.iges.or.jp/public/2006gl/pdf/3_Volume3/V3_4_Ch4_Metal_Industry.pdf
-                                 'steel': 2.2, #https://taxation-customs.ec.europa.eu/document/download/017e46f1-dd1a-4235-b2d7-dafcc6692acf_en?filename=Default%20values%20transitional%20period.pdf, 'Weighted average primary', 'Other articles of iron or steel'
-                                 'hydrogen': "SPECIFIC_HYDROGEN", # not included as precursor here, handled separately
-                                      }
+            "steel production, blast furnace-basic oxygen furnace, low-alloyed": "primary steel (BF-BOF)",
+            "steel production, blast furnace-basic oxygen furnace, unalloyed": "primary steel (BF-BOF)",
 
-dict_types = {'steel production, electric, low-alloyed': 'secondary steel (EAF)',
-              'steel production, electric, unalloyed': 'secondary steel (EAF)',
-             'H2-DRI, iron production': 'iron production (H$_2$-DRI)',
-              'NG-DRI-EAF, steel production, low-alloyed': 'primary steel (DRI-EAF, NG)',
-              'NG-DRI-EAF, steel production, unalloyed': 'primary steel (DRI-EAF, NG)',
-             'steel production, electric, low-alloyed, primary steel, using direct reduced iron': 'primary steel (DRI-EAF, coal)',
-             'steel production, electric, unalloyed, primary steel, using direct reduced iron': 'primary steel (DRI-EAF, coal)',
-             'steel production, converter, low-alloyed, only primary steel': 'primary steel (BF-BOF)',
-                'steel production, converter, unalloyed, only primary steel': 'primary steel (BF-BOF)',
-             'H2-DRI-EAF, steel production, low-alloyed': 'primary steel (DRI-EAF, H$_2$)',
-              'H2-DRI-EAF, steel production, unalloyed': 'primary steel (DRI-EAF, H$_2$)',
-             'BF-BOF+CCS, steel production, low-alloyed': 'primary steel (BF-BOF-CCS)',
-              'BF-BOF+CCS, steel production, unalloyed': 'primary steel (BF-BOF-CCS)',
-             'pig iron production': 'iron production', 
-             'EW-EAF, steel production, low-alloyed': 'primary steel (EW-EAF)',
-             'EW-EAF, steel production, unalloyed': 'primary steel (EW-EAF)',
-             }
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, low-alloyed": "primary steel (DRI-EAF, H$_2$)",
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed": "primary steel (DRI-EAF, H$_2$)",
+
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, low-alloyed": "primary steel (BF-BOF-CCS)",
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed": "primary steel (BF-BOF-CCS)",
+
+            "pig iron production": "iron production",
+
+            "steel production, electrowinning-electric arc furnace, low-alloyed": "primary steel (EW-EAF)",
+            "steel production, electrowinning-electric arc furnace, unalloyed": "primary steel (EW-EAF)",
+        }
 
 dict_power_acts = {'natural gas': ('electricity production, natural gas, combined cycle power plant', 'electricity, high voltage'),
                    'pv': ('electricity production, photovoltaic, 570kWp open ground installation, multi-Si', 'electricity, low voltage'), 
@@ -181,180 +167,741 @@ dict_hydrogen_acts = {'natural gas': ('hydrogen production, steam methane reform
                    'renewable': ('hydrogen production, gaseous, 30 bar, from PEM electrolysis, solar PV ground-mounted, global cf [0.175]', 'hydrogen, gaseous, 30 bar'),
                   }
 
+dict_acts = {
+    "unalloyed": {
+        # Steel production
+        "EAF steel production": (
+            "steel production, electric, low-alloyed, secondary steel, using scrap iron" ,
+            "steel, low-alloyed",
+            "RoW",
+        ),
+        "EAF steel production (DRI, coal)": (
+            "steel production, electric, low-alloyed, primary steel, using direct reduced iron",
+            "steel, low-alloyed",
+            "RoW",
+        ),
+        "EAF steel production (DRI, NG)": (
+            "steel production, natural gas-based direct reduction iron-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "OHF steel production": (
+            "steel production, blast furnace-basic oxygen furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "BOF steel production": (
+            "steel production, blast furnace-basic oxygen furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "steel-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "both-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "steel-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "both-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "steel-tgr": (
+            "steel production, blast furnace-basic oxygen furnace, with top gas recycling, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "both-tgr": (
+            "steel production, blast furnace-basic oxygen furnace, with top gas recycling, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "steel-tgr-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with top gas recycling, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "both-tgr-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with top gas recycling, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "steel-electrowinning": (
+            "steel production, electrowinning-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "both-electrowinning": (
+            "steel production, electrowinning-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "steel-dri-ng-ccs": (
+            "steel production, natural gas-based direct reduction iron-electric arc furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "both-dri-ng-ccs": (
+            "steel production, natural gas-based direct reduction iron-electric arc furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
 
-dict_acts = {"unalloyed":
+        # Iron production
+        "iron-dri-hydrogen": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "BF production": (
+            "pig iron production",
+            "pig iron",
+            "RER",
+        ),
+        "DRI production": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-ccs": (
+            "pig iron production, blast furnace, with carbon capture and storage",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-tgr": (
+            "pig iron production, top gas recycling-blast furnace",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-tgr-ccs": (
+            "pig iron production, blast furnace, with top gas recycling, with carbon capture and storage",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-ng-dri": (
+            "pig iron production, with natural gas-based direct reduction",
+            "iron",
+            "GLO",
+        ),
+        "iron-ng-dri-ccs": (
+            "pig iron production, with natural gas-based direct reduction, with carbon capture and storage",
+            "iron",
+            "GLO",
+        ),
+        "iron-electrowinning": (
+            "pig iron production, by electrowinning",
+            "pig iron",
+            "GLO",
+        ),
+    },
 
-                 {'EAF steel production': ('steel production, electric, low-alloyed', 'steel, low-alloyed', "RoW"), # no low-alloyed EAF steel
-                  'EAF steel production (DRI, coal)':  ('steel production, electric, low-alloyed, primary steel, using direct reduced iron', 
-                                                  'steel, low-alloyed', "RoW"), # no low-alloyed EAF steel
-                          'EAF steel production (DRI, NG)': ('NG-DRI-EAF, steel production, unalloyed',
-                                                             'NG-DRI-EAF steel, unalloyed', 'GLO'),
-                 
-                  'OHF steel production': ('steel production, converter, unalloyed, only primary steel', 'steel, unalloyed', "RER"),
-                 'BOF steel production': ('steel production, converter, unalloyed, only primary steel', 'steel, unalloyed', "RER"),
-                 'steel-ccs': ('BF-BOF+CCS, steel production, unalloyed', 'steel, unalloyed', 'GLO'),
-                 'both-ccs': ('BF-BOF+CCS, steel production, unalloyed', 'steel, unalloyed', 'GLO'),                  
-                 'steel-dri-hydrogen': ('H2-DRI-EAF, steel production, unalloyed', 'H2-DRI-EAF steel, unalloyed', 'GLO'),
-                 'both-dri-hydrogen': ('H2-DRI-EAF, steel production, unalloyed', 'H2-DRI-EAF steel, unalloyed', 'GLO'),
-                  
-                 'iron-dri-hydrogen': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                 'BF production': ('pig iron production', 'pig iron', "RER"), 
-                 'DRI production': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                 'iron-ccs': ('BF+CCS, iron production', 'BF+CCS iron', 'GLO')},
-    
-            "low-alloyed":
-                {'EAF steel production': ('steel production, electric, low-alloyed', 'steel, low-alloyed', "RoW"),
-                          'EAF steel production (DRI, coal)':  ('steel production, electric, low-alloyed, primary steel, using direct reduced iron', 'steel, low-alloyed', "RoW"),
+    "low-alloyed": {
+        # Steel production
+        "EAF steel production": (
+            "steel production, electric, low-alloyed, secondary steel, using scrap iron" ,
+            "steel, low-alloyed",
+            "RoW",
+        ),
+        "EAF steel production (DRI, coal)": (
+            "steel production, electric, low-alloyed, primary steel, using direct reduced iron",
+            "steel, low-alloyed",
+            "RoW",
+        ),
+        "EAF steel production (DRI, NG)": (
+            "steel production, natural gas-based direct reduction iron-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "OHF steel production": (
+            "steel production, blast furnace-basic oxygen furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "BOF steel production": (
+            "steel production, blast furnace-basic oxygen furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "steel-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "both-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "steel-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "both-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "steel-tgr": (
+            "steel production, blast furnace-basic oxygen furnace, with top gas recycling, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "both-tgr": (
+            "steel production, blast furnace-basic oxygen furnace, with top gas recycling, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "steel-tgr-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with top gas recycling, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "both-tgr-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with top gas recycling, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "steel-electrowinning": (
+            "steel production, electrowinning-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "both-electrowinning": (
+            "steel production, electrowinning-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "steel-dri-ng-ccs": (
+            "steel production, natural gas-based direct reduction iron-electric arc furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "both-dri-ng-ccs": (
+            "steel production, natural gas-based direct reduction iron-electric arc furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
 
-                      'EAF steel production (DRI, NG)': ('NG-DRI-EAF, steel production, low-alloyed',
-                                                         'NG-DRI-EAF steel, low-alloyed', 'GLO'),
-                         'OHF steel production': ('steel production, converter, low-alloyed, only primary steel', 'steel, low-alloyed', "RER"),
-                         'BOF steel production': ('steel production, converter, low-alloyed, only primary steel', 'steel, low-alloyed', "RER"),
-                         'steel-ccs': ('BF-BOF+CCS, steel production, low-alloyed', 'steel, low-alloyed', 'GLO'),
-                         'both-ccs': ('BF-BOF+CCS, steel production, low-alloyed', 'steel, low-alloyed', 'GLO'),
-                         'steel-dri-hydrogen': ('H2-DRI-EAF, steel production, low-alloyed', 'H2-DRI-EAF steel, low-alloyed', 'GLO'),
-                         'both-dri-hydrogen': ('H2-DRI-EAF, steel production, low-alloyed', 'H2-DRI-EAF steel, low-alloyed', 'GLO'),
-                 
-                         'iron-dri-hydrogen': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                         'BF production': ('pig iron production', 'pig iron', "RER"), 
-                         'DRI production': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                         'iron-ccs': ('BF+CCS, iron production', 'BF+CCS iron', 'GLO')}
-            
-            }
+        # Iron production
+        "iron-dri-hydrogen": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "BF production": (
+            "pig iron production",
+            "pig iron",
+            "RER",
+        ),
+        "DRI production": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-ccs": (
+            "pig iron production, blast furnace, with carbon capture and storage",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-tgr": (
+            "pig iron production, top gas recycling-blast furnace",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-tgr-ccs": (
+            "pig iron production, blast furnace, with top gas recycling, with carbon capture and storage",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-ng-dri": (
+            "pig iron production, with natural gas-based direct reduction",
+            "iron",
+            "GLO",
+        ),
+        "iron-ng-dri-ccs": (
+            "pig iron production, with natural gas-based direct reduction, with carbon capture and storage",
+            "iron",
+            "GLO",
+        ),
+        "iron-electrowinning": (
+            "pig iron production, by electrowinning",
+            "pig iron",
+            "GLO",
+        ),
+    },
+}
 
-dict_acts_future_dri = {"unalloyed":
 
-                 {'EAF steel production': ('steel production, electric, low-alloyed', 'steel, low-alloyed', "RoW"), # no low-alloyed EAF steel
-                  'EAF steel production (DRI, coal)':  ('H2-DRI-EAF, steel production, unalloyed', 'H2-DRI-EAF steel, unalloyed', 'GLO'),
-                  'EAF steel production (DRI, NG)': ('H2-DRI-EAF, steel production, unalloyed', 'H2-DRI-EAF steel, unalloyed', 'GLO'),
-                 
-                  'OHF steel production': ('H2-DRI-EAF, steel production, unalloyed', 'H2-DRI-EAF steel, unalloyed', 'GLO'),
-                 'BOF steel production': ('H2-DRI-EAF, steel production, unalloyed', 'H2-DRI-EAF steel, unalloyed', 'GLO'),
-                 'steel-ccs': ('BF-BOF+CCS, steel production, unalloyed', 'steel, unalloyed', 'GLO'),
-                 'both-ccs': ('BF-BOF+CCS, steel production, unalloyed', 'steel, unalloyed', 'GLO'),                  
-                 'steel-dri-hydrogen': ('H2-DRI-EAF, steel production, unalloyed', 'H2-DRI-EAF steel, unalloyed', 'GLO'),
-                 'both-dri-hydrogen': ('H2-DRI-EAF, steel production, unalloyed', 'H2-DRI-EAF steel, unalloyed', 'GLO'),
-                  
-                 'iron-dri-hydrogen': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                 'BF production': ('pig iron production', 'pig iron', "RER"), 
-                 'DRI production': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                 'iron-ccs': ('BF+CCS, iron production', 'BF+CCS iron', 'GLO')},
-    
-            "low-alloyed":
-                        
-                {'EAF steel production': ('steel production, electric, low-alloyed', 'steel, low-alloyed', "RoW"),
-                          'EAF steel production (DRI, coal)': ('H2-DRI-EAF, steel production, low-alloyed', 'H2-DRI-EAF steel, low-alloyed', 'GLO'),
-                            'EAF steel production (DRI, NG)': ('H2-DRI-EAF, steel production, low-alloyed', 'H2-DRI-EAF steel, low-alloyed', 'GLO'),
-                 
-                         'OHF steel production': ('H2-DRI-EAF, steel production, low-alloyed', 'H2-DRI-EAF steel, low-alloyed', 'GLO'),
-                         'BOF steel production': ('H2-DRI-EAF, steel production, low-alloyed', 'H2-DRI-EAF steel, low-alloyed', 'GLO'),
-                         'steel-ccs': ('BF-BOF+CCS, steel production, low-alloyed', 'steel, low-alloyed', 'GLO'),
-                         'both-ccs': ('BF-BOF+CCS, steel production, low-alloyed', 'steel, low-alloyed', 'GLO'),
-                         'steel-dri-hydrogen': ('H2-DRI-EAF, steel production, low-alloyed', 'H2-DRI-EAF steel, low-alloyed', 'GLO'),
-                         'both-dri-hydrogen': ('H2-DRI-EAF, steel production, low-alloyed', 'H2-DRI-EAF steel, low-alloyed', 'GLO'),
-                 
-                         'iron-dri-hydrogen': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                         'BF production': ('pig iron production', 'pig iron', "RER"), 
-                         'DRI production': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                         'iron-ccs': ('BF+CCS, iron production', 'BF+CCS iron', 'GLO')},
-            
-            }
 
-dict_acts_future_ccs = {"unalloyed":
+dict_acts_future_dri = {
+    "unalloyed": {
+        "EAF steel production": (
+            "steel production, electric, low-alloyed, secondary steel, using scrap iron" ,
+            "steel, low-alloyed",
+            "RoW",
+        ),  # still fallback because no low-alloyed EAF steel in your setup
 
-                 {'EAF steel production': ('steel production, electric, low-alloyed', 'steel, low-alloyed', "RoW"), # no low-alloyed EAF steel
-                  'EAF steel production (DRI, coal)': ('BF-BOF+CCS, steel production, unalloyed', 'steel, unalloyed', 'GLO'),
-                  'EAF steel production (DRI, NG)': ('BF-BOF+CCS, steel production, unalloyed', 'steel, unalloyed', 'GLO'),
-                 
-                  'OHF steel production': ('BF-BOF+CCS, steel production, unalloyed', 'steel, unalloyed', 'GLO'),
-                 'BOF steel production': ('BF-BOF+CCS, steel production, unalloyed', 'steel, unalloyed', 'GLO'),
-                 'steel-ccs': ('BF-BOF+CCS, steel production, unalloyed', 'steel, unalloyed', 'GLO'),
-                 'both-ccs': ('BF-BOF+CCS, steel production, unalloyed', 'steel, unalloyed', 'GLO'),                  
-                 'steel-dri-hydrogen': ('H2-DRI-EAF, steel production, unalloyed', 'H2-DRI-EAF steel, unalloyed', 'GLO'),
-                 'both-dri-hydrogen': ('H2-DRI-EAF, steel production, unalloyed', 'H2-DRI-EAF steel, unalloyed', 'GLO'),
-                  
-                 'iron-dri-hydrogen': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                 'BF production': ('pig iron production', 'pig iron', "RER"), 
-                 'DRI production': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                 'iron-ccs': ('BF+CCS, iron production', 'BF+CCS iron', 'GLO')},
-    
-            "low-alloyed":
-                        
-                {'EAF steel production': ('steel production, electric, low-alloyed', 'steel, low-alloyed', "RoW"),
-                          'EAF steel production (DRI, coal)': ('BF-BOF+CCS, steel production, low-alloyed', 'steel, low-alloyed', 'GLO'),
-                         'EAF steel production (DRI, NG)': ('BF-BOF+CCS, steel production, low-alloyed', 'steel, low-alloyed', 'GLO'),
-                 
-                         'OHF steel production': ('BF-BOF+CCS, steel production, low-alloyed', 'steel, low-alloyed', 'GLO'),
-                         'BOF steel production': ('BF-BOF+CCS, steel production, low-alloyed', 'steel, low-alloyed', 'GLO'),
-                         'steel-ccs': ('BF-BOF+CCS, steel production, low-alloyed', 'steel, low-alloyed', 'GLO'),
-                         'both-ccs': ('BF-BOF+CCS, steel production, low-alloyed', 'steel, low-alloyed', 'GLO'),
-                         'steel-dri-hydrogen': ('H2-DRI-EAF, steel production, low-alloyed', 'H2-DRI-EAF steel, low-alloyed', 'GLO'),
-                         'both-dri-hydrogen': ('H2-DRI-EAF, steel production, low-alloyed', 'H2-DRI-EAF steel, low-alloyed', 'GLO'),
-                 
-                         'iron-dri-hydrogen': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                         'BF production': ('pig iron production', 'pig iron', "RER"), 
-                         'DRI production': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                         'iron-ccs': ('BF+CCS, iron production', 'BF+CCS iron', 'GLO')},
-            
-            }
+        "EAF steel production (DRI, coal)": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "EAF steel production (DRI, NG)": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
 
-dict_acts_future_ew = {"unalloyed":
+        "OHF steel production": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "BOF steel production": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
 
-                 {'EAF steel production': ('steel production, electric, low-alloyed', 'steel, low-alloyed', "RoW"), # no low-alloyed EAF steel
-                  'EAF steel production (DRI, coal)': ('EW-EAF, steel production, unalloyed', 'EW-EAF steel, unalloyed', 'GLO'),
-                  'EAF steel production (DRI, NG)': ('EW-EAF, steel production, unalloyed', 'EW-EAF steel, unalloyed', 'GLO'),
-                 
-                  'OHF steel production': ('EW-EAF, steel production, unalloyed', 'EW-EAF steel, unalloyed', 'GLO'),
-                 'BOF steel production': ('EW-EAF, steel production, unalloyed', 'EW-EAF steel, unalloyed', 'GLO'),
-                 'steel-ccs': ('BF-BOF+CCS, steel production, unalloyed', 'steel, unalloyed', 'GLO'),
-                 'both-ccs': ('BF-BOF+CCS, steel production, unalloyed', 'steel, unalloyed', 'GLO'),                  
-                 'steel-dri-hydrogen': ('H2-DRI-EAF, steel production, unalloyed', 'H2-DRI-EAF steel, unalloyed', 'GLO'),
-                 'both-dri-hydrogen': ('H2-DRI-EAF, steel production, unalloyed', 'H2-DRI-EAF steel, unalloyed', 'GLO'),
-                  
-                 'iron-dri-hydrogen': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                 'BF production': ('pig iron production', 'pig iron', "RER"), 
-                 'DRI production': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                 'iron-ccs': ('BF+CCS, iron production', 'BF+CCS iron', 'GLO')},
-    
-            "low-alloyed":
+        "steel-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "both-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
 
-                {'EAF steel production': ('steel production, electric, low-alloyed', 'steel, low-alloyed', "RoW"),
-                          'EAF steel production (DRI, coal)': ('EW-EAF, steel production, low-alloyed', 'EW-EAF steel, low-alloyed', 'GLO'),
-                         'EAF steel production (DRI, NG)': ('EW-EAF, steel production, low-alloyed', 'EW-EAF steel, low-alloyed', 'GLO'),
-                 
-                         'OHF steel production': ('EW-EAF, steel production, low-alloyed', 'EW-EAF steel, low-alloyed', 'GLO'),
-                         'BOF steel production': ('EW-EAF, steel production, low-alloyed', 'EW-EAF steel, low-alloyed', 'GLO'),
-                         'steel-ccs': ('BF-BOF+CCS, steel production, low-alloyed', 'steel, low-alloyed', 'GLO'),
-                         'both-ccs': ('BF-BOF+CCS, steel production, low-alloyed', 'steel, low-alloyed', 'GLO'),
-                         'steel-dri-hydrogen': ('H2-DRI-EAF, steel production, low-alloyed', 'H2-DRI-EAF steel, low-alloyed', 'GLO'),
-                         'both-dri-hydrogen': ('H2-DRI-EAF, steel production, low-alloyed', 'H2-DRI-EAF steel, low-alloyed', 'GLO'),
-                 
-                         'iron-dri-hydrogen': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'), #('EW, iron production', 'EW iron', 'GLO'),
-                         'BF production': ('pig iron production', 'pig iron', "RER"), 
-                         'DRI production': ('H2-DRI, iron production', 'H2-DRI iron', 'GLO'),
-                         'iron-ccs': ('BF+CCS, iron production', 'BF+CCS iron', 'GLO')},
-            
-            }
+        "steel-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "both-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+
+        "iron-dri-hydrogen": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "BF production": (
+            "pig iron production",
+            "pig iron",
+            "RER",
+        ),
+        "DRI production": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-ccs": (
+            "pig iron production, blast furnace, with carbon capture and storage",
+            "pig iron",
+            "GLO",
+        ),
+    },
+
+    "low-alloyed": {
+        "EAF steel production": (
+            "steel production, electric, low-alloyed, secondary steel, using scrap iron" ,
+            "steel, low-alloyed",
+            "RoW",
+        ),
+        "EAF steel production (DRI, coal)": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "EAF steel production (DRI, NG)": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+
+        "OHF steel production": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "BOF steel production": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+
+        "steel-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "both-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+
+        "steel-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "both-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+
+        "iron-dri-hydrogen": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "BF production": (
+            "pig iron production",
+            "pig iron",
+            "RER",
+        ),
+        "DRI production": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-ccs": (
+            "pig iron production, blast furnace, with carbon capture and storage",
+            "pig iron",
+            "GLO",
+        ),
+    },
+}
+
+dict_acts_future_ccs = {
+    "unalloyed": {
+        "EAF steel production": (
+            "steel production, electric, low-alloyed, secondary steel, using scrap iron" ,
+            "steel, low-alloyed",
+            "RoW",
+        ),  # fallback kept as in your original logic
+
+        "EAF steel production (DRI, coal)": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "EAF steel production (DRI, NG)": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+
+        "OHF steel production": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "BOF steel production": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+
+        "steel-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "both-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+
+        "steel-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "both-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+
+        "iron-dri-hydrogen": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "BF production": (
+            "pig iron production",
+            "pig iron",
+            "RER",
+        ),
+        "DRI production": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-ccs": (
+            "pig iron production, blast furnace, with carbon capture and storage",
+            "pig iron",
+            "GLO",
+        ),
+    },
+
+    "low-alloyed": {
+        "EAF steel production": (
+            "steel production, electric, low-alloyed, secondary steel, using scrap iron" ,
+            "steel, low-alloyed",
+            "RoW",
+        ),
+        "EAF steel production (DRI, coal)": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "EAF steel production (DRI, NG)": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+
+        "OHF steel production": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "BOF steel production": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+
+        "steel-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "both-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+
+        "steel-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "both-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+
+        "iron-dri-hydrogen": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "BF production": (
+            "pig iron production",
+            "pig iron",
+            "RER",
+        ),
+        "DRI production": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-ccs": (
+            "pig iron production, blast furnace, with carbon capture and storage",
+            "pig iron",
+            "GLO",
+        ),
+    },
+}
+
+dict_acts_future_ew = {
+    "unalloyed": {
+        "EAF steel production": (
+            "steel production, electric, low-alloyed, secondary steel, using scrap iron" ,
+            "steel, low-alloyed",
+            "RoW",
+        ),  # fallback kept as in your original logic
+
+        "EAF steel production (DRI, coal)": (
+            "steel production, electrowinning-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "EAF steel production (DRI, NG)": (
+            "steel production, electrowinning-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+
+        "OHF steel production": (
+            "steel production, electrowinning-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "BOF steel production": (
+            "steel production, electrowinning-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+
+        "steel-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "both-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+
+        "steel-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+        "both-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed",
+            "steel, unalloyed",
+            "GLO",
+        ),
+
+        "iron-dri-hydrogen": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "BF production": (
+            "pig iron production",
+            "pig iron",
+            "RER",
+        ),
+        "DRI production": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-ccs": (
+            "pig iron production, blast furnace, with carbon capture and storage",
+            "pig iron",
+            "GLO",
+        ),
+    },
+
+    "low-alloyed": {
+        "EAF steel production": (
+            "steel production, electric, low-alloyed, secondary steel, using scrap iron" ,
+            "steel, low-alloyed",
+            "RoW",
+        ),
+        "EAF steel production (DRI, coal)": (
+            "steel production, electrowinning-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "EAF steel production (DRI, NG)": (
+            "steel production, electrowinning-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+
+        "OHF steel production": (
+            "steel production, electrowinning-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "BOF steel production": (
+            "steel production, electrowinning-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+
+        "steel-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "both-ccs": (
+            "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+
+        "steel-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+        "both-dri-hydrogen": (
+            "steel production, hydrogen-based direct reduction iron-electric arc furnace, low-alloyed",
+            "steel, low-alloyed",
+            "GLO",
+        ),
+
+        "iron-dri-hydrogen": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "BF production": (
+            "pig iron production",
+            "pig iron",
+            "RER",
+        ),
+        "DRI production": (
+            "pig iron production, hydrogen-based direct reduction iron",
+            "pig iron",
+            "GLO",
+        ),
+        "iron-ccs": (
+            "pig iron production, blast furnace, with carbon capture and storage",
+            "pig iron",
+            "GLO",
+        ),
+    },
+}
 
 db_label_map = {
-    "ecoinvent_310_reference": "2025",
-    "ecoinvent_image_SSP2-RCP26_2030_base": "2030",
-    "ecoinvent_image_SSP2-RCP26_2035_base": "2035",
-    "ecoinvent_image_SSP2-RCP26_2040_base": "2040",
-    "ecoinvent_image_SSP2-RCP26_2045_base": "2045",
-    "ecoinvent_image_SSP2-RCP26_2050_base": "2050"
+    "ecoinvent_312_reference": "2025",
+    "ecoinvent_image_SSP2-L_2030_base": "2030",
+    "ecoinvent_image_SSP2-L_2035_base": "2035",
+    "ecoinvent_image_SSP2-L_2040_base": "2040",
+    "ecoinvent_image_SSP2-L_2045_base": "2045",
+    "ecoinvent_image_SSP2-L_2050_base": "2050"
 }
 
 name_mapping_techs = {
-    'TGR-BF-BOF+CCS, steel production, unalloyed': 'TGR-BF-BOF + CCS',
-    'EW-EAF, steel production, unalloyed': 'EW-EAF',
-    'steel production, converter, unalloyed, only primary steel': 'BF-BOF',
-    'NG-DRI-EAF, steel production, unalloyed': 'DRI-EAF (NG)',
-    'H2-DRI-EAF, steel production, unalloyed': 'DRI-EAF (H$_2$)',
-    'steel production, electric, low-alloyed, secondary steel, using scrap iron': 'EAF (Secondary, scrap)',
-    'NG-DRI-EAF+CCS, steel production, unalloyed': 'DRI-EAF (NG) + CCS',
-    'steel production, electric, low-alloyed, primary steel, using direct reduced iron': 'EAF (DRI, coal)',
-    'TGR-BF-BOF, steel production, unalloyed': 'TGR-BF-BOF',
-    'BF-BOF+CCS, steel production, unalloyed': 'BF-BOF + CCS'
+    "steel production, blast furnace-basic oxygen furnace, with top gas recycling, with carbon capture and storage, unalloyed": "TGR-BF-BOF + CCS",
+    "steel production, electrowinning-electric arc furnace, unalloyed": "EW-EAF",
+    "steel production, converter, unalloyed": "BF-BOF",
+    "steel production, natural gas-based direct reduction iron-electric arc furnace, unalloyed": "DRI-EAF (NG)",
+    "steel production, hydrogen-based direct reduction iron-electric arc furnace, unalloyed": "DRI-EAF (H$_2$)",
+    "steel production, electric, low-alloyed, secondary steel, using scrap iron" : "EAF (Secondary, scrap)",
+    "steel production, natural gas-based direct reduction iron-electric arc furnace, with carbon capture and storage, unalloyed": "DRI-EAF (NG) + CCS",
+    "steel production, electric, low-alloyed, primary steel, using direct reduced iron": "EAF (DRI, coal)",
+    "steel production, blast furnace-basic oxygen furnace, with top gas recycling, unalloyed": "TGR-BF-BOF",
+    "steel production, blast furnace-basic oxygen furnace, with carbon capture and storage, unalloyed": "BF-BOF + CCS",
 }
-

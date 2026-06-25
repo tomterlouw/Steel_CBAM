@@ -10,6 +10,7 @@ import matplotlib.patheffects as pe
 
 from mapping import * 
 from functions import iso2_to_country
+from config import NAME_CC_COL
 
 def custom_autopct(pct, all_vals):
     absolute = np.round(pct / 1. * np.sum(all_vals), 1)
@@ -38,7 +39,7 @@ def plot_steel_supply_curve(
     inset_xlim=(0, 250),
     inset_ylim=(0, 1.75),
     inset_max_cumulative=1000,
-    lca_impact_col = "lca_impact_climate change_wo_transport",
+    lca_impact_col = NAME_CC_COL,
     zoom=True,
 ):
     """
@@ -154,7 +155,7 @@ def plot_steel_supply_curve(
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.show()
 
-def plot_steel_production(import_df, production_col='production volume', max_nr_countries=25, export_figure=False,max_y=1200, cc_name_col="Plant_GHG_emissions_Mt_wo_transport"):
+def plot_steel_production(import_df, production_col='production volume', max_nr_countries=25, export_figure=False,max_y=1200, cc_name_col="Plant_GHG_emissions_Mt"):
     """
     Plots the production of primary and secondary steel per country as a stacked bar chart,
     with total production values displayed above each bar. If 'production volume' is selected,
@@ -655,6 +656,84 @@ def plot_cbam_scope_stacked(results_df_ind, ei_dbs, db_label_map, name_mapping_t
                        bottom=bottom, color=color,
                        label=scope if i == 0 and j == 0 else "")
                 bottom += row[scope]
+
+        # X-axis and titles
+        ax.set_xticks(x)
+        ax.set_xticklabels([db_label_map.get(db, db) for db in ei_dbs], rotation=90, fontsize=fontsize_n)
+        ax.tick_params(axis='y', labelsize=fontsize_n)
+
+        subplot_label = f"{chr(97 + i)}."
+        ax.set_title(rf"$\bf{{{subplot_label}}}$ {name_mapping_techs.get(steel, steel)}",
+                     fontsize=fontsize_n - 1, pad=10, loc='left')
+
+        ax.yaxis.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.7)
+
+    # Global y-axis labels
+    fig.text(0.07, 0.28, "kg CO$_2$-eq./kg steel", va='center', rotation='vertical', fontsize=fontsize_n)
+    fig.text(0.07, 0.72, "kg CO$_2$-eq./kg steel", va='center', rotation='vertical', fontsize=fontsize_n)
+
+    # Remove unused subplots
+    for j in range(len(steel_names), len(axs)):
+        fig.delaxes(axs[j])
+
+    # Global legend
+    handles, labels = axs[0].get_legend_handles_labels()
+    labels = [label.replace('CBAM True', 'CBAM included').replace('CBAM False', 'CBAM excluded') for label in labels]
+    fig.legend(handles, labels, loc='upper center', ncol=5, frameon=False,
+               fontsize=fontsize_n, bbox_to_anchor=(0.5, 0.95))
+
+    plt.subplots_adjust(hspace=0.29, wspace=0.15)
+
+    # Save and show
+    fig.savefig(output_path, dpi=600, bbox_inches="tight")
+    plt.show()
+
+def plot_stacked(results_df_ind, ei_dbs, db_label_map, name_mapping_techs, 
+                             output_path="figs/steel_stacked.png", fontsize_n=13.2):
+    """
+    Plots stacked bar charts for each steel technology showing:
+        - CBAM-covered vs non-covered emissions
+        - Scope 1, 2, and 3 breakdown
+    
+    Parameters:
+        results_df_ind (pd.DataFrame): DataFrame containing steel emissions data.
+        ei_dbs (list): List of database names to include on the x-axis.
+        db_label_map (dict): Mapping from database keys to display names for x-axis.
+        name_mapping_techs (dict): Mapping from steel technology identifiers to display names.
+        output_path (str): File path to save the figure.
+        fontsize_n (float): Base font size for labels and annotations.
+    """
+    steel_names = np.sort(results_df_ind["name"].unique())
+    
+    # Layout: 5 plots per row
+    cols = 5
+    rows = int(np.ceil(len(steel_names) / cols))
+    fig, axs = plt.subplots(rows, cols, figsize=(14, 5 * rows), sharey=True)
+    axs = axs.flatten()
+
+    cbam_colors = ['darkgreen', 'darkred']
+    scope_colors = ['darkgrey', 'darkblue', '#b07aa1']
+    bar_width = 0.35
+
+    for i, steel in enumerate(steel_names):
+        ax = axs[i]
+        data = results_df_ind[results_df_ind["name"] == steel]
+        x = np.arange(len(ei_dbs))
+
+        for j, db in enumerate(ei_dbs):
+            row = data[data["database"] == db]
+            if row.empty:
+                continue
+            row = row.iloc[0]
+
+            # CBAM stacked bar
+            ax.bar(x[j] - bar_width / 2, row[name_cbam_true], width=bar_width,
+                   color=cbam_colors[0], label="CBAM True" if i == 0 and j == 0 else "")
+            ax.bar(x[j] - bar_width / 2, row[name_cbam_false], width=bar_width,
+                   bottom=row[name_cbam_true], color=cbam_colors[1],
+                   label="CBAM False" if i == 0 and j == 0 else "")
+
+            ax.set_ylim(0, 4.25)
 
         # X-axis and titles
         ax.set_xticks(x)
